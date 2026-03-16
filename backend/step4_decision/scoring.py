@@ -206,12 +206,12 @@ def _compute_score(
         similarity = 0.0
 
     if similarity < NARRATIVE_THRESHOLD:
-        return 0, None  # 1차 필터 미달 → Skip
+        return 0, None, similarity  # 1차 필터 미달 → Skip
 
     # ── 2차 필터: 물리적 수용 가능성 ─────────────────────────────────────────
     if ad_type == "video_clip" and ad_dur is not None:
         if scene_duration < ad_dur:
-            return 0, None  # 씬이 광고보다 짧음 → Skip
+            return 0, None, similarity  # 씬이 광고보다 짧음 → Skip
         window_duration = ad_dur
     else:
         # 배너: 씬 내 기본 표시 시간만큼 윈도우 탐색
