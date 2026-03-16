@@ -181,8 +181,8 @@ def _sample_frames_for_scene(
     if total == 0:
         return []
 
-    start_idx = max(0, int(scene_start_sec))
-    end_idx = min(total - 1, int(scene_end_sec))
+    start_idx = max(0, int(scene_start_sec * config.FRAME_EXTRACTION_FPS))
+    end_idx = min(total - 1, int(scene_end_sec * config.FRAME_EXTRACTION_FPS))
 
     if start_idx > end_idx:
         return []
@@ -282,6 +282,7 @@ def _generate_scene_contexts(
     transcript_segments: list[dict],
     frame_paths: list[str],
     total_duration_sec: float,
+    visual_cut_times: list[float] | None = None,
 ) -> None:
     """
     Phase A 정방향 씬 분석 오케스트레이터. (v2.5 — _generate_context_tags 교체)
@@ -302,6 +303,7 @@ def _generate_scene_contexts(
     scenes = dialogue_segmenter.segment_video(
         transcript_segments=transcript_segments,
         total_duration_sec=total_duration_sec,
+        visual_cut_times=visual_cut_times,
     )
     logger.info("[%s] Detected %d scene(s).", job_id, len(scenes))
 
@@ -430,13 +432,15 @@ def run(job_id: str) -> None:
         transcript_segments = audio_transcription.transcribe(info["audio_path"])
         _insert_transcript(job_id, transcript_segments)
 
-        # ── Phase A: 정방향 씬 분절 + 멀티모달 컨텍스트 생성 (v2.5) ───────────
+        # ── Phase A: 정방향 씬 분절 + 멀티모달 컨텍스트 생성 (v2.5/v2.8) ───────
         logger.info("[%s] Starting Phase A: scene segmentation + context ...", job_id)
+        visual_cuts = info.get("scene_cut_times") or []
         _generate_scene_contexts(
             job_id=job_id,
             transcript_segments=transcript_segments,
             frame_paths=frame_paths,
             total_duration_sec=total_duration_sec,
+            visual_cut_times=visual_cuts if isinstance(visual_cuts, list) else [],
         )
 
         _update_job_status(job_id, "persisting")

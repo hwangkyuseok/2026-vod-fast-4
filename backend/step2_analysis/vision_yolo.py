@@ -33,6 +33,7 @@ from PIL import Image
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from common.config import (
+    FRAME_EXTRACTION_FPS,
     SCENE_CUT_THRESHOLD,
     YOLO_CONFIDENCE_THRESHOLD,
     YOLO_BATCH_SIZE,
@@ -259,7 +260,7 @@ def analyse_frames(
 
         row = {
             "frame_index":   int(idx),
-            "timestamp_sec": float(idx),   # 1 fps -> idx == seconds
+            "timestamp_sec": float(idx) / FRAME_EXTRACTION_FPS,  # absolute seconds
             "is_scene_cut":  bool(cut),
             **safe,
         }

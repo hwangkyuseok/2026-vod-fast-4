@@ -200,6 +200,34 @@ def score_ad_context_fit(
         return 0.0
 
 
+def batch_similarity_matrix(
+    context_texts: list[str],
+    target_texts: list[str],
+) -> np.ndarray:
+    """
+    Compute cosine similarity matrix between all context texts and target texts.
+
+    Returns np.ndarray of shape (len(context_texts), len(target_texts)).
+    Encodes context_texts + target_texts in a single model.encode() call,
+    then computes the full matrix via matrix multiply — O(N+M) encodes
+    instead of O(N×M) individual calls.
+    """
+    model = _get_model()
+    n_ctx = len(context_texts)
+    n_tgt = len(target_texts)
+    if model is None or n_ctx == 0 or n_tgt == 0:
+        return np.zeros((n_ctx, n_tgt))
+    try:
+        all_vecs = model.encode(context_texts + target_texts, normalize_embeddings=True)
+        ctx_vecs = all_vecs[:n_ctx]
+        tgt_vecs = all_vecs[n_ctx:]
+        matrix = np.dot(ctx_vecs, tgt_vecs.T)
+        return np.clip(matrix, 0.0, 1.0)
+    except Exception as exc:
+        logger.warning("batch_similarity_matrix() failed: %s", exc)
+        return np.zeros((n_ctx, n_tgt))
+
+
 def is_available() -> bool:
     """Return True if sentence-transformers model is loaded and ready."""
     return _get_model() is not None

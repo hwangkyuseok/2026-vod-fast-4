@@ -1,7 +1,51 @@
 # VOD Ad Overlay System — 파이프라인 전체 문서 v2
 
 > **2026_VOD_FAST_4** | 비디오 문맥 분석 기반 동적 광고 오버레이 시스템
-> 현재 버전: **v2.6 (Scene-driven) + Docker 배포**
+> 현재 버전: **v2.8 (Algorithm Improvements)**
+
+---
+
+## 변경 이력
+
+### v2.8 — Algorithm Improvements (2026-03-16)
+
+**개요**: PROJECT_2 비교 분석 결과를 반영한 알고리즘 효율성 개선 3종 + 환경 설정 분리
+
+#### 1. 타임스탬프 절대 시간 보정 (`step2_analysis/vision_yolo.py`)
+
+- **변경 전**: `"timestamp_sec": float(idx)` → 프레임 인덱스를 초 단위로 잘못 사용
+- **변경 후**: `"timestamp_sec": float(idx) / FRAME_EXTRACTION_FPS` → 절대 초 단위 보정
+- **효과**: 1fps 추출 환경에서는 차이 없으나, 향후 다중 fps 지원 시 정확도 보장
+
+#### 2. 임베딩 배치 행렬 연산 (`step4_decision/embedding_scorer.py`, `scoring.py`)
+
+- **변경 전**: 후보 N×M개 각각 개별 encode() 호출 → O(N×M) 모델 추론
+- **변경 후**:
+  - `batch_similarity_matrix(context_texts, target_texts)` 신규 추가
+  - unique context + unique target를 1회 encode() → 행렬 곱으로 전체 유사도 계산
+  - `scoring.run()`에서 `sim_lookup` dict로 사전 계산 결과 재사용
+- **효과**: 중복 컨텍스트/광고 재계산 제거, 대규모 후보 처리 시 인퍼런스 횟수 대폭 감소
+
+#### 3. scenedetect 시각적 씬 경계 감지 (`step1_preprocessing/pipeline.py`, `step2_analysis/dialogue_segmenter.py`)
+
+- **Step 1 신규**: `detect_scene_cuts(video_path)` — scenedetect ContentDetector(threshold=27.0)로 시각적 컷 타임스탬프 추출
+- **DB 컬럼 추가**: `video_preprocessing_info.scene_cut_times JSONB` (마이그레이션: `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`)
+- **`segment_video()` 파라미터 추가**: `visual_cut_times: list[float] | None`
+  - 대화 임베딩 경계와 시각적 컷을 융합 (2초 이내 중복 제거)
+  - 두 신호의 보완 관계: 대화 없는 액션씬 → 시각적 컷이 보완
+- **`consumer.run()`**: DB에서 `scene_cut_times` 읽어 `_generate_scene_contexts()`에 전달
+- **의존성 추가**: `scenedetect>=0.6.4` → `requirements.backend.txt`
+
+#### 4. 환경 설정 분리 및 보안 강화
+
+- `.gitignore` 생성: `.env`, `*.pt`, `*.pth`, `*.bin`, `*.safetensors`, `models/` 등 제외
+- `.env.example` / `backend/.env.example` / `frontend/.env.local.example` 템플릿 생성
+- `docker-compose.pipeline.yml`, `docker-compose.analyze-narrative.yml`: 하드코딩 값 → `${VAR:-default}` 변수 치환
+- `backend/common/config.py`: `load_dotenv()` 추가, 민감 기본값 제거, 환경별 경로 자동 분기 (`platform.system()`)
+
+---
+
+### v2.6 — Scene-driven + Docker 배포 (이전)
 
 ---
 
@@ -350,6 +394,7 @@ fps                 FLOAT
 width               INT
 height              INT
 total_frames        INT
+scene_cut_times     JSONB  -- scenedetect 시각적 컷 타임스탬프 배열 (v2.8 추가)
 created_at          TIMESTAMP
 ```
 
@@ -483,7 +528,8 @@ QUEUE_STEP4: vod.step4.decision
 | `extract_audio(video_path, output_dir)` | ffmpeg → WAV (16kHz mono PCM) |
 | `extract_frames(video_path, output_dir, fps)` | ffmpeg → JPEG 1fps |
 | `get_video_metadata(video_path)` | ffprobe → duration/fps/해상도 |
-| `save_to_db(job_id, paths, meta)` | `video_preprocessing_info` INSERT |
+| `detect_scene_cuts(video_path)` | **(v2.8)** scenedetect ContentDetector → 시각적 컷 타임스탬프 목록 |
+| `save_to_db(job_id, paths, meta, scene_cut_times)` | `video_preprocessing_info` INSERT (scene_cut_times 포함) |
 | `run(job_id, video_path)` | Step 1 전체 실행 |
 
 **생성 파일**
@@ -538,16 +584,18 @@ Whisper small (Docker), `task='translate'` → 영어 변환 → `analysis_trans
 
 | 함수 | 역할 |
 |------|------|
-| `segment_video(transcript_segments, total_duration_sec, min_scene_sec)` | 전방향 씬 경계 탐지 → 씬 목록 |
+| `segment_video(transcript_segments, total_duration_sec, min_scene_sec, visual_cut_times)` | **(v2.8)** 전방향 씬 경계 탐지 + 시각적 컷 융합 → 씬 목록 |
 | `find_context_start(transcript_segments, silence_start_sec, ...)` | 가변 컨텍스트 윈도우 시작 시각 |
 
-**`segment_video()` 알고리즘**
+**`segment_video()` 알고리즘 (v2.8)**
 ```
 1. transcript를 15초 청크로 묶기
 2. 모든 청크 임베딩 (sentence-transformers)
-3. 인접 청크 간 cosine sim < 0.52 → 씬 경계
-4. min_scene_sec(30s)보다 짧은 씬 → 이전 씬에 병합
-5. 마지막 씬은 total_duration_sec에서 종료
+3. 인접 청크 간 cosine sim < 0.52 → 대화 씬 경계
+4. visual_cut_times 제공 시: 대화 경계와 2초 이상 차이 나는 시각적 컷만 병합 (중복 제거)
+5. boundary_starts.sort() → 통합 경계 목록
+6. min_scene_sec(30s)보다 짧은 씬 → 이전 씬에 병합
+7. 마지막 씬은 total_duration_sec에서 종료
 Fallback: transcript 없음 → 단일 씬 [0, total_duration_sec]
 ```
 
@@ -619,6 +667,7 @@ Phase C (침묵 → 씬 매핑):
 | 함수 | 역할 |
 |------|------|
 | `score_narrative_fit(context_narrative, ad_narrative)` | 주 경로 — narrative 1:1 코사인 유사도 |
+| `batch_similarity_matrix(context_texts, target_texts)` | **(v2.8)** N×M 배치 유사도 행렬 (단일 encode + 행렬 곱) |
 | `score_ad_context_fit(context_summary, ad_name, target_mood)` | 레거시 fallback |
 | `compute_similarity(text_a, text_b)` | 코사인 유사도 |
 | `embed(text)` | 정규화 임베딩 벡터 |
@@ -979,6 +1028,7 @@ tail -f /app/HelloVision/data/logs/analyze_ad_narrative.log
 | `step1_preprocessing/pipeline.py` | `extract_audio` | ffmpeg WAV 추출 |
 | `step1_preprocessing/pipeline.py` | `extract_frames` | ffmpeg JPEG 추출 |
 | `step1_preprocessing/pipeline.py` | `get_video_metadata` | ffprobe 메타데이터 |
+| `step1_preprocessing/pipeline.py` | `detect_scene_cuts` | **(v2.8)** scenedetect 시각적 컷 감지 |
 | `step1_preprocessing/pipeline.py` | `run` | Step 1 실행 |
 | `step2_analysis/vision_yolo.py` | `_get_model` | YOLOv8l 로드 |
 | `step2_analysis/vision_yolo.py` | `_compute_safe_area` | safe_area + density + exclusion zone |
@@ -1002,6 +1052,7 @@ tail -f /app/HelloVision/data/logs/analyze_ad_narrative.log
 | `step3_persistence/pipeline.py` | `build_candidates` | 씬 × 광고 후보 쌍 생성 |
 | `step3_persistence/pipeline.py` | `run` | Step 3 실행 |
 | `step4_decision/embedding_scorer.py` | `score_narrative_fit` | narrative 1:1 코사인 유사도 (주 경로) |
+| `step4_decision/embedding_scorer.py` | `batch_similarity_matrix` | **(v2.8)** N×M 배치 유사도 행렬 |
 | `step4_decision/embedding_scorer.py` | `score_ad_context_fit` | 레거시 fallback 앙상블 유사도 |
 | `step4_decision/embedding_scorer.py` | `compute_similarity` | 코사인 유사도 |
 | `step4_decision/embedding_scorer.py` | `embed` | 정규화 임베딩 벡터 |
