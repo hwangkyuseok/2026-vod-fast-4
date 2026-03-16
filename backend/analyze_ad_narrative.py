@@ -109,6 +109,31 @@ AD_NARRATIVE_PROMPT = (
     "젊은 피부와 자기 관리의 여유로움을 약속하며 우아하고 세련된 분위기를 전달합니다.'"
 )
 
+AD_NARRATIVE_PROMPT_WITH_CATEGORY = (
+    "이 광고 이미지 또는 영상 프레임을 분석하세요.\n\n"
+    "이 광고의 카테고리는 [{category}] 입니다.\n\n"
+    "다음 네 가지 차원을 모두 포함하는 하나의 자연스러운 한국어 문장을 작성하세요:\n"
+    "1. 카테고리: 광고하는 제품 또는 서비스\n"
+    "2. 타겟 고객: 연령대, 성별, 라이프스타일 등\n"
+    "3. 핵심 메시지: 광고가 해결하는 니즈 또는 제공하는 핵심 가치\n"
+    "4. 광고 분위기: 전반적인 감성 톤과 느낌\n\n"
+    "사물을 나열하거나 시각적 묘사만 하지 마세요. "
+    "해석적이고 자연스러운 문장으로 작성하세요.\n"
+    "예시: '30~40대 여성을 대상으로 한 프리미엄 스킨케어 브랜드로, "
+    "젊은 피부와 자기 관리의 여유로움을 약속하며 우아하고 세련된 분위기를 전달합니다.'"
+)
+
+
+def _build_prompt(ad_category: str | None) -> str:
+    """
+    ad_category 존재 여부에 따라 프롬프트를 선택한다.
+    카테고리가 있으면 해당 정보를 프롬프트에 주입하여 VLM이 더 정확한 분석을 하도록 유도.
+    카테고리가 없으면 (기존 238개 등) 기본 프롬프트 사용 — 동작 변경 없음.
+    """
+    if ad_category and ad_category.strip():
+        return AD_NARRATIVE_PROMPT_WITH_CATEGORY.format(category=ad_category.strip())
+    return AD_NARRATIVE_PROMPT
+
 
 # ── 경로 변환 (Windows DB경로 → Linux 컨테이너 경로) ──────────────────────────
 
@@ -178,13 +203,14 @@ def _extract_video_frame(video_path: str, duration_sec: float | None) -> str | N
 
 # ── Qwen2-VL 광고 분석 ───────────────────────────────────────────────────────
 
-def _analyse_ad(image_path: str, ad_id: str) -> str:
+def _analyse_ad(image_path: str, ad_id: str, prompt: str | None = None) -> str:
     """
     단일 이미지로 광고 narrative 생성.
 
     Args:
         image_path: 분석할 이미지(또는 추출 프레임) 경로.
         ad_id:      로깅용 광고 ID.
+        prompt:     사용할 프롬프트. None이면 기본 AD_NARRATIVE_PROMPT 사용.
 
     Returns:
         정제된 narrative 문자열. 실패 시 "".
@@ -194,13 +220,14 @@ def _analyse_ad(image_path: str, ad_id: str) -> str:
         return FALLBACK_NARRATIVE
 
     model, processor = _get_model()
+    active_prompt = prompt if prompt is not None else AD_NARRATIVE_PROMPT
 
     messages = [
         {
             "role": "user",
             "content": [
                 {"type": "image", "image": image_path},
-                {"type": "text",  "text": AD_NARRATIVE_PROMPT},
+                {"type": "text",  "text": active_prompt},
             ],
         }
     ]
@@ -246,13 +273,15 @@ def _get_unprocessed_ads(limit: int | None = None, force: bool = False) -> list[
     """
     if force:
         sql = """
-            SELECT ad_id, ad_name, ad_type, resource_path, duration_sec
+            SELECT ad_id, ad_name, ad_type, resource_path, duration_sec,
+                   ad_category
               FROM ad_inventory
              ORDER BY ad_id
         """
     else:
         sql = """
-            SELECT ad_id, ad_name, ad_type, resource_path, duration_sec
+            SELECT ad_id, ad_name, ad_type, resource_path, duration_sec,
+                   ad_category
               FROM ad_inventory
              WHERE target_narrative IS NULL
                 OR TRIM(target_narrative) = ''
@@ -297,7 +326,8 @@ def _process_ad(ad: dict) -> str:
                 logger.warning("[%s] Image file not found: %s", ad_id, image_path)
                 return FALLBACK_NARRATIVE
 
-        return _analyse_ad(image_path, ad_id)
+        prompt = _build_prompt(ad.get("ad_category"))
+        return _analyse_ad(image_path, ad_id, prompt=prompt)
 
     finally:
         # 임시 프레임 파일 정리
