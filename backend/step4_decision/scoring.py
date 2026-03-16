@@ -14,13 +14,17 @@ v2.7  : 맥락 부적합 광고 억제
         - NARRATIVE_THRESHOLD 0.30 → 0.50 (느슨한 관련성 제거)
         - SCORE_SEMANTIC_MIN_SIM 0.25 → 0.40 (낮은 유사도 점수 억제)
         - MIN_SCORE_TO_KEEP 1 → 20 (유사도+밀도 복합 조건 미달 시 광고 없음 판정)
+v2.10 : 카테고리 매칭 보너스 추가
+        - ad_category NULL이면 보너스 없음 (graceful degradation)
+        - context_narrative ↔ ad_category 유사도 ≥ 0.35 → +10점
 
-스코어링 공식 (v2.7):
+스코어링 공식 (v2.10):
   [1차 필터] similarity < NARRATIVE_THRESHOLD(0.50) → Skip
   [2차 필터] video_clip: scene_duration < ad_duration → Skip
   0~+80   score_narrative_fit(context_narrative, target_narrative)
   +20     최적 윈도우 내 object_density ≤ 0.3
   +15     최적 윈도우 내 침묵 구간 겹침 (가점)
+  +10     ad_category 매칭 보너스 (NULL이면 미적용)
   −40     최적 윈도우 내 object_density ≥ 0.7
   [최종]  score < MIN_SCORE_TO_KEEP(20) → 광고 없음 판정
 
@@ -50,6 +54,8 @@ logger = logging.getLogger(__name__)
 NARRATIVE_THRESHOLD    = 0.50  # 1차 필터: 이 이하 similarity → Skip (맥락 무관)
 SCORE_LOW_DENSITY      = 20    # 최적 윈도우 object_density ≤ 0.3
 SCORE_SILENCE_BONUS    = 15    # 최적 윈도우 내 침묵 구간 겹침 가점
+SCORE_CATEGORY_BONUS   = 10    # ad_category ↔ context_narrative 유사도 ≥ 0.35 (NULL이면 미적용)
+CATEGORY_SIM_THRESHOLD = 0.35  # 카테고리 보너스 적용 최소 유사도
 PENALTY_HIGH_DENSITY   = -40   # 최적 윈도우 object_density ≥ 0.7
 
 SCORE_SEMANTIC_MAX     = 80    # similarity=1.0 → +80점
@@ -254,6 +260,17 @@ def _compute_score(
     w_end   = w_start + window_duration
     if _get_silence_overlap(job_id, w_start, w_end):
         score += SCORE_SILENCE_BONUS
+
+    # +10: 카테고리 매칭 보너스 (ad_category NULL이면 graceful skip)
+    ad_category = (candidate.get("ad_category") or "").strip()
+    if ad_category and context_narrative and embedding_scorer.is_available():
+        cat_sim = embedding_scorer.compute_similarity(context_narrative, ad_category)
+        if cat_sim >= CATEGORY_SIM_THRESHOLD:
+            score += SCORE_CATEGORY_BONUS
+            logger.debug(
+                "category_fit: sim=%.3f → +%d  ad=%s  category=%s",
+                cat_sim, SCORE_CATEGORY_BONUS, candidate.get("ad_id"), ad_category,
+            )
 
     # similarity 반환 추가 — 레이블 데이터 수집용 피처로 decision_result에 저장
     return score, window, similarity

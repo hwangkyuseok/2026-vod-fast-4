@@ -59,7 +59,8 @@ def _get_ad_inventory() -> list[dict]:
     return _db.fetchall(
         """
         SELECT ad_id, ad_name, ad_type, resource_path,
-               duration_sec, target_narrative, width, height
+               duration_sec, target_narrative, width, height,
+               ad_category, ad_category_path
           FROM ad_inventory
         """,
     )
@@ -70,7 +71,7 @@ def build_candidates(job_id: str) -> list[dict]:
     Return a list of candidate dicts, each representing one
     (scene × ad) pair to be scored.
 
-    Schema (v2.9):
+    Schema (v2.10):
     {
         "scene_start_sec":   float,
         "scene_end_sec":     float,
@@ -81,6 +82,8 @@ def build_candidates(job_id: str) -> list[dict]:
         "ad_type":           str,
         "ad_duration_sec":   float | None,
         "target_narrative":  str,
+        "ad_category":       str,        -- NULL이면 "" (카테고리 보너스 미적용)
+        "ad_category_path":  list[str],  -- NULL이면 []
     }
     """
     scenes     = _get_scene_intervals(job_id)
@@ -107,6 +110,8 @@ def build_candidates(job_id: str) -> list[dict]:
                 "ad_type":           ad["ad_type"],
                 "ad_duration_sec":   float(ad["duration_sec"]) if ad["duration_sec"] is not None else None,
                 "target_narrative":  ad.get("target_narrative") or "",
+                "ad_category":       ad.get("ad_category") or "",
+                "ad_category_path":  ad.get("ad_category_path") or [],
             })
 
     logger.info(

@@ -138,6 +138,10 @@ CREATE TABLE IF NOT EXISTS ad_inventory (
     -- v2.5: 4차원 서술형 광고 내러티브 (Category / Audience / Core Message / Ad Vibe)
     -- analyze_ad_narrative.py 실행으로 채워짐.
     target_narrative TEXT,
+    -- v2.10: TVCF 카테고리 계층 (tvcf_downloader.py로 채워짐. 신규 다운로드분부터 적용)
+    -- NULL이면 카테고리 보너스 없음 (graceful degradation)
+    ad_category      TEXT,                -- 예: '음료/기호식품'
+    ad_category_path TEXT[],              -- 예: ['대한민국','신문','음료/기호식품','소주']
     width            INTEGER,
     height           INTEGER,
     created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW()
