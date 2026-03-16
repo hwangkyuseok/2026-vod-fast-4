@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS video_preprocessing_info (
     width            INTEGER NOT NULL,
     height           INTEGER NOT NULL,
     total_frames     INTEGER NOT NULL,
+    scene_cut_times  JSONB   NOT NULL DEFAULT '[]',
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

@@ -17,12 +17,8 @@ One-shot (used by the API server to start a job immediately):
 import argparse
 import json
 import logging
-import os
-import subprocess
-import uuid
 from pathlib import Path
 
-import cv2
 import ffmpeg
 
 import sys
