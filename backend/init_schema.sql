@@ -178,6 +178,10 @@ CREATE TABLE IF NOT EXISTS decision_result (
     coordinates_w         INTEGER,
     coordinates_h         INTEGER,
     score                 INTEGER      NOT NULL,
+    -- v2.8: 레이블 데이터 수집용 피처 컬럼
+    similarity_score      FLOAT,
+    scene_duration_sec    FLOAT,
+    avg_density           FLOAT,
     created_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
