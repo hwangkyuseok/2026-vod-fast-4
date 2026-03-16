@@ -1,0 +1,187 @@
+# docker-compose.pipeline.yml
+# ─────────────────────────────────────────────────────────────────────────────
+# VOD 광고 오버레이 파이프라인 — 전체 서비스 구성 (v1.0)
+#
+# 서버 배포 경로:
+#   백엔드  : /app/Docker/pipeline/
+#   프론트  : /app/Docker/frontend/
+#   이 파일 : /app/Docker/pipeline/
+#
+# 최초 실행:
+#   cp .env.example .env  # .env 파일 생성 후 실제 값 입력
+#   docker-compose -f docker-compose.pipeline.yml build
+#   docker-compose -f docker-compose.pipeline.yml up -d
+#
+# 전체 중지:
+#   docker-compose -f docker-compose.pipeline.yml down
+#
+# 로그 확인:
+#   docker-compose -f docker-compose.pipeline.yml logs -f step2
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Step 1: 전처리 (프레임 추출 / 오디오 디먹싱) ──────────────────────────
+  step1:
+    build:
+      context: /app/Docker/pipeline
+      dockerfile: Dockerfile.backend
+    image: vod-backend:latest
+    command: ["python", "-m", "step1_preprocessing.pipeline", "--consume"]
+    restart: unless-stopped
+    environment:
+      DB_HOST: "${DB_HOST}"
+      DB_PORT: "${DB_PORT:-5432}"
+      DB_NAME: "${DB_NAME}"
+      DB_USER: "${DB_USER}"
+      DB_PASSWORD: "${DB_PASSWORD}"
+      RABBITMQ_HOST: "${RABBITMQ_HOST}"
+      RABBITMQ_PORT: "${RABBITMQ_PORT:-5672}"
+      RABBITMQ_USER: "${RABBITMQ_USER}"
+      RABBITMQ_PASSWORD: "${RABBITMQ_PASSWORD}"
+      QUEUE_PREFIX: "${QUEUE_PREFIX:-prod}"
+      STORAGE_BASE: "/app/storage"
+      TZ: "${TZ:-Asia/Seoul}"
+    volumes:
+      - /app/HelloVision/data/vod:/vod:ro
+      - /app/HelloVision/data/storage:/app/storage
+      - /app/HelloVision/data/logs:/app/storage/logs
+
+  # ── Step 2: 분석 (YOLO / Whisper / Qwen2-VL) ──────────────────────────────
+  step2:
+    build:
+      context: /app/Docker/pipeline
+      dockerfile: Dockerfile.step2
+    image: vod-step2:latest
+    command: ["python", "-m", "step2_analysis.consumer"]
+    restart: unless-stopped
+    environment:
+      DB_HOST: "${DB_HOST}"
+      DB_PORT: "${DB_PORT:-5432}"
+      DB_NAME: "${DB_NAME}"
+      DB_USER: "${DB_USER}"
+      DB_PASSWORD: "${DB_PASSWORD}"
+      RABBITMQ_HOST: "${RABBITMQ_HOST}"
+      RABBITMQ_PORT: "${RABBITMQ_PORT:-5672}"
+      RABBITMQ_USER: "${RABBITMQ_USER}"
+      RABBITMQ_PASSWORD: "${RABBITMQ_PASSWORD}"
+      QUEUE_PREFIX: "${QUEUE_PREFIX:-prod}"
+      STORAGE_BASE: "/app/storage"
+      WHISPER_MODEL: "${WHISPER_MODEL:-small}"
+      TZ: "${TZ:-Asia/Seoul}"
+      HF_HOME: "/models"
+      TRANSFORMERS_CACHE: "/models"
+    volumes:
+      - /app/HelloVision/data/storage:/app/storage
+      - /app/HelloVision/data/logs:/app/storage/logs
+      - qwen_model_cache:/models
+
+  # ── Step 3: 저장 (씬 세그먼테이션 결과 DB 저장) ───────────────────────────
+  step3:
+    image: vod-backend:latest
+    command: ["python", "-m", "step3_persistence.pipeline"]
+    restart: unless-stopped
+    depends_on:
+      - step1
+    environment:
+      DB_HOST: "${DB_HOST}"
+      DB_PORT: "${DB_PORT:-5432}"
+      DB_NAME: "${DB_NAME}"
+      DB_USER: "${DB_USER}"
+      DB_PASSWORD: "${DB_PASSWORD}"
+      RABBITMQ_HOST: "${RABBITMQ_HOST}"
+      RABBITMQ_PORT: "${RABBITMQ_PORT:-5672}"
+      RABBITMQ_USER: "${RABBITMQ_USER}"
+      RABBITMQ_PASSWORD: "${RABBITMQ_PASSWORD}"
+      QUEUE_PREFIX: "${QUEUE_PREFIX:-prod}"
+      STORAGE_BASE: "/app/storage"
+      TZ: "${TZ:-Asia/Seoul}"
+    volumes:
+      - /app/HelloVision/data/storage:/app/storage
+      - /app/HelloVision/data/logs:/app/storage/logs
+
+  # ── Step 4: 스코어링 / 광고 결정 ─────────────────────────────────────────
+  step4:
+    image: vod-backend:latest
+    command: ["python", "-m", "step4_decision.scoring", "--consume"]
+    restart: unless-stopped
+    depends_on:
+      - step1
+    environment:
+      DB_HOST: "${DB_HOST}"
+      DB_PORT: "${DB_PORT:-5432}"
+      DB_NAME: "${DB_NAME}"
+      DB_USER: "${DB_USER}"
+      DB_PASSWORD: "${DB_PASSWORD}"
+      RABBITMQ_HOST: "${RABBITMQ_HOST}"
+      RABBITMQ_PORT: "${RABBITMQ_PORT:-5672}"
+      RABBITMQ_USER: "${RABBITMQ_USER}"
+      RABBITMQ_PASSWORD: "${RABBITMQ_PASSWORD}"
+      QUEUE_PREFIX: "${QUEUE_PREFIX:-prod}"
+      STORAGE_BASE: "/app/storage"
+      TZ: "${TZ:-Asia/Seoul}"
+      HF_HOME: "/models"
+      TRANSFORMERS_CACHE: "/models"
+    volumes:
+      - /app/HelloVision/data/storage:/app/storage
+      - /app/HelloVision/data/logs:/app/storage/logs
+      - sentence_model_cache:/models
+
+  # ── Step 5: FastAPI 서버 ──────────────────────────────────────────────────
+  step5-api:
+    image: vod-backend:latest
+    command: ["python", "-m", "step5_api.server"]
+    restart: unless-stopped
+    depends_on:
+      - step1
+    ports:
+      - "8000:8000"
+    environment:
+      DB_HOST: "${DB_HOST}"
+      DB_PORT: "${DB_PORT:-5432}"
+      DB_NAME: "${DB_NAME}"
+      DB_USER: "${DB_USER}"
+      DB_PASSWORD: "${DB_PASSWORD}"
+      RABBITMQ_HOST: "${RABBITMQ_HOST}"
+      RABBITMQ_PORT: "${RABBITMQ_PORT:-5672}"
+      RABBITMQ_USER: "${RABBITMQ_USER}"
+      RABBITMQ_PASSWORD: "${RABBITMQ_PASSWORD}"
+      QUEUE_PREFIX: "${QUEUE_PREFIX:-prod}"
+      STORAGE_BASE: "/app/storage"
+      AD_VIDEO_DIR: "/ads/video"
+      AD_IMAGE_DIR: "/ads/banner"
+      API_HOST: "0.0.0.0"
+      API_PORT: "8000"
+      API_BASE_URL: "${API_BASE_URL}"
+      VOD_DIR: "/vod"
+      TZ: "${TZ:-Asia/Seoul}"
+    volumes:
+      - /app/HelloVision/data/storage:/app/storage
+      - /app/HelloVision/data/logs:/app/storage/logs
+      - /app/HelloVision/data/ad_assets/video:/ads/video:ro
+      - /app/HelloVision/data/ad_assets/image:/ads/banner:ro
+      - /app/HelloVision/data/vod:/vod:ro
+
+  # ── Frontend: Next.js ─────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: /app/Docker/frontend
+      dockerfile: Dockerfile.frontend
+      args:
+        BACKEND_URL: "http://step5-api:8000"
+    image: vod-frontend:latest
+    restart: unless-stopped
+    depends_on:
+      - step5-api
+    ports:
+      - "3000:3000"
+    environment:
+      BACKEND_URL: "http://step5-api:8000"
+      TZ: "${TZ:-Asia/Seoul}"
+
+# ── Named Volumes ─────────────────────────────────────────────────────────────
+volumes:
+  qwen_model_cache:
+    driver: local
+  sentence_model_cache:
+    driver: local

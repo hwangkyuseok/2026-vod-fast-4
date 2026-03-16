@@ -1,0 +1,85 @@
+# ─── Environment / Secrets ────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+backend/.env
+
+# ─── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+*.cover
+
+# ─── Virtual Environments ─────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+
+# ─── Node / Next.js ───────────────────────────────────────────────────────────
+node_modules/
+.next/
+out/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ─── IDE ──────────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+
+# ─── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── Storage / Data ───────────────────────────────────────────────────────────
+storage/
+vod/
+logs/
+*.log
+
+# ─── Media Files ──────────────────────────────────────────────────────────────
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.ts
+*.m4v
+
+# ─── ML Model Cache ───────────────────────────────────────────────────────────
+models/
+.cache/
+
+# ─── Docker Build Artifacts ───────────────────────────────────────────────────
+*.dockerignore
+
+# ─── Runtime Files ────────────────────────────────────────────────────────────
+.pids.json
+
+# ─── Build / Package Artifacts ────────────────────────────────────────────────
+*.zip
+
+# ─── ML Model Weights (large binary files) ────────────────────────────────────
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors

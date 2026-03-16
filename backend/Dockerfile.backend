@@ -1,0 +1,52 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Dockerfile.backend
+# step1 / step3 / step4 / step5-api 공용 컨테이너 이미지
+#
+# 서비스별 CMD는 docker-compose.pipeline.yml 에서 command: 로 지정
+#   step1 : python -m step1_preprocessing.pipeline --consume
+#   step3 : python -m step3_persistence.pipeline
+#   step4 : python -m step4_decision.scoring --consume
+#   step5 : python -m step5_api.server
+# ─────────────────────────────────────────────────────────────────────────────
+
+FROM python:3.11-slim
+
+# ── 시스템 패키지 ─────────────────────────────────────────────────────────────
+# ffmpeg       : 영상 디먹싱 / 프레임 추출 (step1)
+# libpq-dev    : psycopg2 빌드 의존성
+# libgl1 / libglib2.0-0 : OpenCV headless 런타임
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ffmpeg \
+        libpq-dev \
+        libgl1 \
+        libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# ── CPU-only PyTorch (sentence-transformers 의존성, CUDA 없이 ~1.2GB 절약) ───
+RUN pip install --no-cache-dir \
+    torch==2.5.1 \
+    torchvision==0.20.1 \
+    --index-url https://download.pytorch.org/whl/cpu
+
+# ── 나머지 의존성 ─────────────────────────────────────────────────────────────
+COPY requirements.backend.txt .
+RUN pip install --no-cache-dir -r requirements.backend.txt
+
+# ── 소스코드 복사 ─────────────────────────────────────────────────────────────
+COPY common/               ./common/
+COPY step1_preprocessing/  ./step1_preprocessing/
+COPY step3_persistence/    ./step3_persistence/
+COPY step4_decision/       ./step4_decision/
+COPY step5_api/            ./step5_api/
+
+# ── 런타임 디렉토리 ───────────────────────────────────────────────────────────
+RUN mkdir -p /app/storage/logs /app/storage/jobs
+
+# ── 환경변수 기본값 ───────────────────────────────────────────────────────────
+ENV PYTHONUNBUFFERED=1
+# sentence-transformers 모델 캐시 → 볼륨으로 마운트해 재사용
+ENV HF_HOME=/models
+ENV TRANSFORMERS_CACHE=/models

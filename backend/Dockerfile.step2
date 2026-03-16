@@ -1,0 +1,48 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Dockerfile.step2
+# step2_analysis 전용 컨테이너 (heavy ML)
+#   - YOLOv8  : 객체 탐지 / safe area 분석
+#   - Whisper : 한국어 음성 전사
+#   - Qwen2-VL: 씬 컨텍스트 분석 (VLM)
+#
+# Run:
+#   docker-compose -f docker-compose.pipeline.yml up step2
+# ─────────────────────────────────────────────────────────────────────────────
+
+FROM python:3.11-slim
+
+# ── 시스템 패키지 ─────────────────────────────────────────────────────────────
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ffmpeg \
+        libpq-dev \
+        libgl1 \
+        libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# ── CPU-only PyTorch ──────────────────────────────────────────────────────────
+RUN pip install --no-cache-dir \
+    torch==2.5.1 \
+    torchvision==0.20.1 \
+    --index-url https://download.pytorch.org/whl/cpu
+
+# ── 나머지 의존성 ─────────────────────────────────────────────────────────────
+COPY requirements.step2.txt .
+RUN pip install --no-cache-dir -r requirements.step2.txt
+
+# ── 소스코드 복사 ─────────────────────────────────────────────────────────────
+COPY common/         ./common/
+COPY step2_analysis/ ./step2_analysis/
+
+# ── 런타임 디렉토리 ───────────────────────────────────────────────────────────
+RUN mkdir -p /app/storage/logs /app/storage/jobs
+
+# ── 환경변수 기본값 ───────────────────────────────────────────────────────────
+ENV PYTHONUNBUFFERED=1
+# Qwen2-VL / Whisper 모델 캐시 → 볼륨으로 마운트해 재사용
+ENV HF_HOME=/models
+ENV TRANSFORMERS_CACHE=/models
+
+CMD ["python", "-m", "step2_analysis.consumer"]
