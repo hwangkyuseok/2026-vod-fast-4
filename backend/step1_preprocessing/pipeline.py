@@ -90,6 +90,34 @@ def extract_frames(video_path: str, output_dir: Path, fps: int = 1) -> str:
     return str(frame_dir)
 
 
+def detect_scene_cuts(video_path: str) -> list[float]:
+    """
+    scenedetect ContentDetector로 영상의 시각적 씬 전환 타임스탬프를 반환한다.
+
+    Returns:
+        정렬된 씬 전환 시각(초) 목록. 오류 시 빈 리스트 반환.
+    """
+    try:
+        from scenedetect import open_video, SceneManager
+        from scenedetect.detectors import ContentDetector
+
+        video = open_video(video_path)
+        scene_manager = SceneManager()
+        scene_manager.add_detector(ContentDetector(threshold=27.0))
+        scene_manager.detect_scenes(video)
+        scene_list = scene_manager.get_scene_list()
+        # 첫 번째 씬의 start는 0.0이므로 두 번째 씬부터의 start를 컷 타임스탬프로 사용
+        cuts = [float(scene[0].get_seconds()) for scene in scene_list[1:]]
+        logger.info("scenedetect: %d visual cut(s) detected in %s", len(cuts), video_path)
+        return cuts
+    except ImportError:
+        logger.warning("scenedetect not installed — skipping visual cut detection.")
+        return []
+    except Exception as exc:
+        logger.warning("scenedetect failed (%s) — skipping visual cut detection.", exc)
+        return []
+
+
 def get_video_metadata(video_path: str) -> dict:
     """Return duration, fps, width, height, total_frames via ffprobe."""
     probe = ffmpeg.probe(video_path)
@@ -116,13 +144,14 @@ def save_to_db(
     audio_path: str,
     frame_dir_path: str,
     meta: dict,
+    scene_cut_times: list[float] | None = None,
 ) -> None:
     _db.execute(
         """
         INSERT INTO video_preprocessing_info
             (job_id, original_video_path, audio_path, frame_dir_path,
-             duration_sec, fps, width, height, total_frames)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+             duration_sec, fps, width, height, total_frames, scene_cut_times)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT DO NOTHING
         """,
         (
@@ -135,6 +164,7 @@ def save_to_db(
             meta["width"],
             meta["height"],
             meta["total_frames"],
+            json.dumps(scene_cut_times or []),
         ),
     )
     logger.info("Preprocessing info saved for job %s", job_id)
@@ -151,8 +181,9 @@ def run(job_id: str, video_path: str) -> None:
         audio_path  = extract_audio(video_path, storage_dir)
         frame_dir   = extract_frames(video_path, storage_dir, fps=config.FRAME_EXTRACTION_FPS)
         meta        = get_video_metadata(video_path)
+        scene_cuts  = detect_scene_cuts(video_path)
 
-        save_to_db(job_id, video_path, audio_path, frame_dir, meta)
+        save_to_db(job_id, video_path, audio_path, frame_dir, meta, scene_cut_times=scene_cuts)
         _update_job_status(job_id, "analysing")
 
         mq.publish(config.QUEUE_STEP2, {"job_id": job_id})

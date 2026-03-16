@@ -15,6 +15,7 @@ python-multipart>=0.0.9
 ffmpeg-python>=0.2.0
 opencv-python-headless>=4.10.0
 Pillow>=10.4.0
+scenedetect>=0.6.4
 
 # ── 오디오 분석 (step1) ──────────────────────────────────────────────────────
 librosa>=0.10.2

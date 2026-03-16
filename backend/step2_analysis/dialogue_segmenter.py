@@ -226,6 +226,7 @@ def segment_video(
     transcript_segments: list[dict],
     total_duration_sec: float,
     min_scene_sec: float = MIN_WINDOW_SEC,
+    visual_cut_times: list[float] | None = None,
 ) -> list[dict]:
     """
     영상 전체를 의미 단위 씬(Scene)으로 분절한다. (v2.5 신규)
@@ -303,6 +304,21 @@ def segment_video(
                 "segment_video: boundary at %.1fs (sim=%.3f)",
                 chunks[i]["start_sec"], sim,
             )
+
+    # ── 시각적 씬 컷 병합 (scenedetect 결과 통합) ──────────────────────────
+    # 대화 기반 경계와 2초 이상 차이 나는 시각적 컷만 추가하여 중복 방지.
+    if visual_cut_times:
+        added = 0
+        for vt in visual_cut_times:
+            if 0.0 < vt < total_duration_sec:
+                if not any(abs(vt - b) < 2.0 for b in boundary_starts):
+                    boundary_starts.append(vt)
+                    added += 1
+        boundary_starts.sort()
+        logger.info(
+            "segment_video: merged %d visual cut(s) (+%d new) with %d dialogue boundary(ies)",
+            len(visual_cut_times), added, len(boundary_starts) - added,
+        )
 
     # ── 씬 목록 빌드 ──────────────────────────────────────────────────────────
     scene_starts = [0.0] + boundary_starts

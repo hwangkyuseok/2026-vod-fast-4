@@ -178,6 +178,7 @@ def _get_silence_overlap(job_id: str, window_start: float, window_end: float) ->
 def _compute_score(
     candidate: dict,
     job_id: str,
+    precomputed_similarity: float | None = None,
 ) -> tuple[int, dict | None]:
     """
     v2.6 Scene-driven 스코어링.
@@ -197,7 +198,10 @@ def _compute_score(
     ad_type           = candidate.get("ad_type", "banner")
 
     # ── 1차 필터: Narrative 유사도 임계치 ─────────────────────────────────────
-    if embedding_scorer.is_available() and context_narrative:
+    if precomputed_similarity is not None:
+        similarity = precomputed_similarity
+        logger.debug("narrative_fit (precomputed): sim=%.3f  ad=%s", similarity, candidate.get("ad_id"))
+    elif embedding_scorer.is_available() and context_narrative:
         if target_narrative:
             similarity = embedding_scorer.score_narrative_fit(context_narrative, target_narrative)
             logger.debug("narrative_fit: sim=%.3f  ad=%s", similarity, candidate.get("ad_id"))
@@ -339,10 +343,37 @@ def _insert_decision_results(job_id: str, results: list[dict]) -> None:
 def run(job_id: str, candidates: list[dict]) -> None:
     _update_job_status(job_id, "deciding")
     try:
+        # ── 배치 행렬 연산으로 narrative 유사도 사전 계산 (v2.8) ──────────────
+        # target_narrative가 있는 후보에 한해 N×M을 단일 행렬 곱으로 처리.
+        # legacy(ad_name+mood) 후보는 _compute_score 내에서 개별 처리됨.
+        sim_lookup: dict[tuple[str, str], float] = {}
+        if embedding_scorer.is_available() and candidates:
+            pairs = [
+                (c.get("context_narrative") or "", c.get("target_narrative") or "")
+                for c in candidates
+                if c.get("context_narrative") and c.get("target_narrative")
+            ]
+            if pairs:
+                unique_ctx = list(dict.fromkeys(p[0] for p in pairs))
+                unique_tgt = list(dict.fromkeys(p[1] for p in pairs))
+                sim_matrix = embedding_scorer.batch_similarity_matrix(unique_ctx, unique_tgt)
+                ctx_idx = {t: i for i, t in enumerate(unique_ctx)}
+                tgt_idx = {t: i for i, t in enumerate(unique_tgt)}
+                for ctx, tgt in pairs:
+                    if (ctx, tgt) not in sim_lookup:
+                        sim_lookup[(ctx, tgt)] = float(sim_matrix[ctx_idx[ctx], tgt_idx[tgt]])
+                logger.info(
+                    "[%s] Batch similarity: %d pair(s) (%d ctx × %d ads) pre-computed.",
+                    job_id, len(sim_lookup), len(unique_ctx), len(unique_tgt),
+                )
+
         scored_candidates = []
 
         for c in candidates:
-            score, window, similarity = _compute_score(c, job_id)
+            ctx = c.get("context_narrative") or ""
+            tgt = c.get("target_narrative") or ""
+            precomputed = sim_lookup.get((ctx, tgt))
+            score, window, similarity = _compute_score(c, job_id, precomputed_similarity=precomputed)
 
             if score <= 0 or window is None:
                 continue  # 필터 미달 또는 점수 없음
