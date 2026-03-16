@@ -45,7 +45,7 @@ def _get_scene_intervals(job_id: str) -> list[dict]:
         SELECT id,
                scene_start_sec,
                scene_end_sec,
-               (scene_end_sec - scene_start_sec) AS scene_duration,
+               (scene_end_sec - scene_start_sec)  AS scene_duration,
                context_narrative
           FROM analysis_scene
          WHERE job_id = %s
@@ -59,7 +59,7 @@ def _get_ad_inventory() -> list[dict]:
     return _db.fetchall(
         """
         SELECT ad_id, ad_name, ad_type, resource_path,
-               duration_sec, target_mood, target_narrative, width, height
+               duration_sec, target_narrative, width, height
           FROM ad_inventory
         """,
     )
@@ -70,7 +70,7 @@ def build_candidates(job_id: str) -> list[dict]:
     Return a list of candidate dicts, each representing one
     (scene × ad) pair to be scored.
 
-    Schema (v2.6):
+    Schema (v2.9):
     {
         "scene_start_sec":   float,
         "scene_end_sec":     float,
@@ -81,7 +81,6 @@ def build_candidates(job_id: str) -> list[dict]:
         "ad_type":           str,
         "ad_duration_sec":   float | None,
         "target_narrative":  str,
-        "target_mood":       list[str],
     }
     """
     scenes     = _get_scene_intervals(job_id)
@@ -108,7 +107,6 @@ def build_candidates(job_id: str) -> list[dict]:
                 "ad_type":           ad["ad_type"],
                 "ad_duration_sec":   float(ad["duration_sec"]) if ad["duration_sec"] is not None else None,
                 "target_narrative":  ad.get("target_narrative") or "",
-                "target_mood":       list(ad["target_mood"] or []),
             })
 
     logger.info(

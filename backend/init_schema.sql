@@ -134,9 +134,8 @@ CREATE TABLE IF NOT EXISTS ad_inventory (
     ad_type          VARCHAR(50)  NOT NULL,   -- 'video_clip' | 'banner'
     resource_path    TEXT         NOT NULL,
     duration_sec     FLOAT,                   -- NULL for images (→ use default display time)
-    target_mood      VARCHAR(500)[] NOT NULL DEFAULT '{}',
     -- v2.5: 4차원 서술형 광고 내러티브 (Category / Audience / Core Message / Ad Vibe)
-    -- analyze_ad_narrative.py 실행으로 채워짐. NULL이면 target_mood 폴백 사용.
+    -- analyze_ad_narrative.py 실행으로 채워짐.
     target_narrative TEXT,
     width            INTEGER,
     height           INTEGER,
