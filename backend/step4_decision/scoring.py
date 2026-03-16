@@ -189,8 +189,6 @@ def _compute_score(
     """
     context_narrative = (candidate.get("context_narrative") or "").strip()
     target_narrative  = (candidate.get("target_narrative") or "").strip()
-    ad_name           = (candidate.get("ad_name") or "").strip()
-    target_mood       = [kw.lower() for kw in (candidate.get("target_mood") or [])]
     scene_start       = float(candidate["scene_start_sec"])
     scene_end         = float(candidate["scene_end_sec"])
     scene_duration    = float(candidate["scene_duration"])
@@ -201,15 +199,9 @@ def _compute_score(
     if precomputed_similarity is not None:
         similarity = precomputed_similarity
         logger.debug("narrative_fit (precomputed): sim=%.3f  ad=%s", similarity, candidate.get("ad_id"))
-    elif embedding_scorer.is_available() and context_narrative:
-        if target_narrative:
-            similarity = embedding_scorer.score_narrative_fit(context_narrative, target_narrative)
-            logger.debug("narrative_fit: sim=%.3f  ad=%s", similarity, candidate.get("ad_id"))
-        elif ad_name:
-            similarity = embedding_scorer.score_ad_context_fit(context_narrative, ad_name, target_mood)
-            logger.debug("legacy_fit: sim=%.3f  ad=%s", similarity, candidate.get("ad_id"))
-        else:
-            similarity = 0.0
+    elif embedding_scorer.is_available() and context_narrative and target_narrative:
+        similarity = embedding_scorer.score_narrative_fit(context_narrative, target_narrative)
+        logger.debug("narrative_fit: sim=%.3f  ad=%s", similarity, candidate.get("ad_id"))
     else:
         similarity = 0.0
 
