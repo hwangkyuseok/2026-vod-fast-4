@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 #                                     0.3~0.5 구간은 "느슨하게 관련" 수준으로 맥락 부적합
 #   SCORE_SEMANTIC_MIN_SIM 0.25→0.40: 스케일링 기준선 상향 → 낮은 유사도 점수 억제
 #   MIN_SCORE_TO_KEEP      1→20    : 유사도 낮거나 밀도 불량 시 "광고 없음" 판정
-NARRATIVE_THRESHOLD    = 0.50  # 1차 필터: 이 이하 similarity → Skip (맥락 무관)
+NARRATIVE_THRESHOLD    = 0.30  # [TEST] 임시 하향 (0.50→0.30): 크로스링구얼 유사도 분포 확인용
 SCORE_LOW_DENSITY      = 20    # 최적 윈도우 object_density ≤ 0.3
 SCORE_SILENCE_BONUS    = 15    # 최적 윈도우 내 침묵 구간 겹침 가점
 SCORE_CATEGORY_BONUS   = 10    # ad_category ↔ context_narrative 유사도 ≥ 0.35 (NULL이면 미적용)
@@ -204,14 +204,15 @@ def _compute_score(
     # ── 1차 필터: Narrative 유사도 임계치 ─────────────────────────────────────
     if precomputed_similarity is not None:
         similarity = precomputed_similarity
-        logger.debug("narrative_fit (precomputed): sim=%.3f  ad=%s", similarity, candidate.get("ad_id"))
+        logger.info("[SIM] sim=%.4f  ctx=%.40s  ad=%s", similarity, context_narrative, candidate.get("ad_id"))
     elif embedding_scorer.is_available() and context_narrative and target_narrative:
         similarity = embedding_scorer.score_narrative_fit(context_narrative, target_narrative)
-        logger.debug("narrative_fit: sim=%.3f  ad=%s", similarity, candidate.get("ad_id"))
+        logger.info("[SIM] sim=%.4f  ctx=%.40s  ad=%s", similarity, context_narrative, candidate.get("ad_id"))
     else:
         similarity = 0.0
 
     if similarity < NARRATIVE_THRESHOLD:
+        logger.info("[SIM][SKIP] sim=%.4f < %.2f  ad=%s", similarity, NARRATIVE_THRESHOLD, candidate.get("ad_id"))
         return 0, None, similarity  # 1차 필터 미달 → Skip
 
     # ── 2차 필터: 물리적 수용 가능성 ─────────────────────────────────────────
