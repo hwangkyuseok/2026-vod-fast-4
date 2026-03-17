@@ -1,6 +1,6 @@
 # docker-compose.analyze-narrative.yml
 # ─────────────────────────────────────────────────────────────────────────────
-# 광고 narrative 분석(analyze_ad_narrative.py) 전용 컨테이너 (v2.5)
+# 광고 narrative 분석 전용 컨테이너 (v2.6 — Gemini Flash)
 #
 # 배포 경로 : /app/Docker/analyze-narrative/
 # 로그 경로 : /app/HelloVision/data/logs/
@@ -17,6 +17,9 @@
 #   미처리 목록만 출력 (분석 없음):
 #     docker compose run --rm analyze-narrative --dry-run
 #
+#   강제 전체 재분석:
+#     docker compose run --rm analyze-narrative --force
+#
 #   빌드:
 #     docker compose build
 # ─────────────────────────────────────────────────────────────────────────────
@@ -27,6 +30,8 @@ services:
       context: /app/Docker/analyze-narrative
       dockerfile: Dockerfile.analyze-narrative
     image: vod-analyze-narrative:latest
+    # Gemini Flash 버전으로 고정 (Qwen2-VL 대체)
+    entrypoint: ["python", "analyze_ad_narrative_gemini.py"]
 
     environment:
       # ── 데이터베이스 ──────────────────────────────────────────────────────
@@ -43,6 +48,10 @@ services:
       # ── 로그 저장 경로 ────────────────────────────────────────────────────
       STORAGE_BASE: "/app/storage"
 
+      # ── Gemini Flash API ─────────────────────────────────────────────────
+      GEMINI_API_KEY: "${GEMINI_API_KEY}"
+      GEMINI_MODEL: "${GEMINI_MODEL:-gemini-2.0-flash}"
+
       # ── 시간대 ────────────────────────────────────────────────────────────
       TZ: "${TZ:-Asia/Seoul}"
 
@@ -55,15 +64,7 @@ services:
       - /app/HelloVision/data/ad_assets/video:/ads/video:ro
       - /app/HelloVision/data/ad_assets/image:/ads/banner:ro
 
-      # ── Qwen2-VL 모델 캐시 (약 4.5GB, 첫 실행 시 자동 다운로드) ─────────
-      - qwen_model_cache:/models
-
       # ── 로그 파일 ─────────────────────────────────────────────────────────
       - /app/HelloVision/data/logs:/app/storage/logs
 
     restart: "no"
-
-# ── Named Volumes ──────────────────────────────────────────────────────────
-volumes:
-  qwen_model_cache:
-    driver: local

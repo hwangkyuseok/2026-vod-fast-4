@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 # ── Tunable constants ─────────────────────────────────────────────────────────
 CHUNK_DURATION_SEC  = 15.0   # seconds per embedding chunk
-BOUNDARY_THRESHOLD  = 0.52   # similarity below this → scene/topic boundary
+BOUNDARY_THRESHOLD  = 0.75   # similarity below this → scene/topic boundary
 MIN_WINDOW_SEC      = 30.0   # never return a window shorter than this
 MAX_WINDOW_SEC      = 240.0  # never look back further than this (4 min)
 FALLBACK_WINDOW_SEC = 120.0  # fixed window when sentence-transformers unavailable
@@ -327,13 +327,20 @@ def segment_video(
         e = scene_starts[i + 1] if i + 1 < len(scene_starts) else total_duration_sec
         raw_scenes.append({"scene_start_sec": s, "scene_end_sec": e})
 
-    # ── 짧은 씬 병합 (min_scene_sec 미만 씬을 이전 씬에 합침) ─────────────────
+    # ── 짧은 씬 병합 (누적 길이 기준 — cascade 방지) ──────────────────────────
+    # 이전 로직: 들어오는 씬이 짧으면 무조건 앞에 붙임 → 한국 드라마처럼 컷이
+    # 잦을 때 모든 씬이 cascade되어 1개로 합쳐지는 버그 발생.
+    # 수정: 누적된 씬이 min_scene_sec 미만일 때만 확장, 이미 충분히 길면 새 씬 시작.
     merged: list[dict] = []
     for scene in raw_scenes:
-        duration = scene["scene_end_sec"] - scene["scene_start_sec"]
-        if merged and duration < min_scene_sec:
-            # 이전 씬 끝을 현재 씬 끝으로 확장
-            merged[-1]["scene_end_sec"] = scene["scene_end_sec"]
+        if merged:
+            accumulated = merged[-1]["scene_end_sec"] - merged[-1]["scene_start_sec"]
+            if accumulated < min_scene_sec:
+                # 아직 짧은 씬 → 현재 씬을 이어 붙여 확장
+                merged[-1]["scene_end_sec"] = scene["scene_end_sec"]
+            else:
+                # 누적 씬이 충분히 길어졌으므로 새 씬 시작
+                merged.append(dict(scene))
         else:
             merged.append(dict(scene))
 

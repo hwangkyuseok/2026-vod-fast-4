@@ -90,6 +90,12 @@ YOLO_BATCH_SIZE           = int(os.getenv("YOLO_BATCH_SIZE",           "200"))
 # v2.5+: task=transcribe + language=ko 사용 (번역 없이 한국어 원문 유지)
 WHISPER_MODEL             = os.getenv("WHISPER_MODEL", "small")
 
+# ─── Gemini Flash API ────────────────────────────────────────────────────────
+# VLM_BACKEND: "qwen" (로컬 Qwen2-VL) | "gemini" (Google Gemini Flash API)
+VLM_BACKEND  = os.getenv("VLM_BACKEND",  "qwen")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL   = os.getenv("GEMINI_MODEL",   "gemini-2.0-flash")
+
 # ─── API Server ───────────────────────────────────────────────────────────────
 API_HOST     = os.getenv("API_HOST",     "0.0.0.0")
 API_PORT     = int(os.getenv("API_PORT", "8000"))

@@ -139,17 +139,14 @@ def _build_prompt(ad_category: str | None) -> str:
 
 def _resolve_path(resource_path: str, ad_type: str) -> str:
     """
-    DB의 resource_path가 Windows 절대경로(D:\\ 등)일 경우
-    파일명만 추출하여 AD_VIDEO_DIR / AD_IMAGE_DIR 기준으로 재조합한다.
-    Linux/컨테이너 환경에서 Windows 경로로 저장된 DB 레코드를 처리하기 위함.
+    DB의 resource_path에서 파일명만 추출하여 컨테이너 내부 경로로 재조합한다.
+    Windows 경로(D:\\...), Linux 절대 경로(/app/... 등) 모두 처리한다.
     """
-    if len(resource_path) >= 3 and resource_path[1] == ":":
-        filename = resource_path.replace("\\", "/").split("/")[-1]
-        base_dir = AD_VIDEO_DIR if ad_type == "video_clip" else AD_IMAGE_DIR
-        resolved = str(Path(base_dir) / filename)
-        logger.debug("Path resolved: %s -> %s", resource_path, resolved)
-        return resolved
-    return resource_path
+    filename = resource_path.replace("\\", "/").split("/")[-1]
+    base_dir = AD_VIDEO_DIR if ad_type == "video_clip" else AD_IMAGE_DIR
+    resolved = str(Path(base_dir) / filename)
+    logger.debug("Path resolved: %s -> %s", resource_path, resolved)
+    return resolved
 
 
 # ── 프레임 추출 (video_clip 전용) ─────────────────────────────────────────────

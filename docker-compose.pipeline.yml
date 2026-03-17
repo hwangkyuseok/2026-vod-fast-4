@@ -68,6 +68,10 @@ services:
       QUEUE_PREFIX: "${QUEUE_PREFIX:-prod}"
       STORAGE_BASE: "/app/storage"
       WHISPER_MODEL: "${WHISPER_MODEL:-small}"
+      # ── VLM 백엔드 선택: "qwen" (로컬) 또는 "gemini" (API) ─────────────────
+      VLM_BACKEND: "${VLM_BACKEND:-gemini}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY}"
+      GEMINI_MODEL: "${GEMINI_MODEL:-gemini-2.0-flash}"
       TZ: "${TZ:-Asia/Seoul}"
       HF_HOME: "/models"
       TRANSFORMERS_CACHE: "/models"

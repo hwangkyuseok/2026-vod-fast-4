@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Dockerfile.analyze-narrative
-# analyze_ad_narrative.py 전용 컨테이너 (v2.5)
+# analyze_ad_narrative_gemini.py 전용 컨테이너 (v2.6 — Gemini Flash)
 #
 # Build:
 #   docker compose -f docker-compose.analyze-narrative.yml build
@@ -9,6 +9,7 @@
 #   docker compose -f docker-compose.analyze-narrative.yml run --rm analyze-narrative
 #   docker compose -f docker-compose.analyze-narrative.yml run --rm analyze-narrative --limit 10
 #   docker compose -f docker-compose.analyze-narrative.yml run --rm analyze-narrative --dry-run
+#   docker compose -f docker-compose.analyze-narrative.yml run --rm analyze-narrative --force
 # ─────────────────────────────────────────────────────────────────────────────
 
 FROM python:3.11-slim
@@ -25,32 +26,24 @@ RUN apt-get update && \
 WORKDIR /app
 
 # ── Python 의존성 ─────────────────────────────────────────────────────────────
-# 1단계: CPU-only PyTorch 먼저 설치 (CUDA 버전 대비 ~1.2GB 절약)
-RUN pip install --no-cache-dir \
-    torch==2.5.1 \
-    torchvision==0.20.1 \
-    --index-url https://download.pytorch.org/whl/cpu
-
-# 2단계: 나머지 의존성
+# Gemini Flash API 사용으로 torch/torchvision 불필요 (이미지 경량화)
 COPY requirements.analyze-narrative.txt .
 RUN pip install --no-cache-dir -r requirements.analyze-narrative.txt
 
 # ── 소스코드 복사 ─────────────────────────────────────────────────────────────
 COPY common/ ./common/
 COPY analyze_ad_narrative.py .
+COPY analyze_ad_narrative_gemini.py .
 
 # 로그 디렉토리 미리 생성
 RUN mkdir -p /app/storage/logs
 
 # ── 환경변수 기본값 ───────────────────────────────────────────────────────────
-# HuggingFace 모델 캐시 → 볼륨으로 마운트해 재사용
-ENV HF_HOME=/models
-ENV TRANSFORMERS_CACHE=/models
 # Python stdout 즉시 출력 (Docker 로그에서 실시간 확인)
 ENV PYTHONUNBUFFERED=1
 
 # ── 실행 ──────────────────────────────────────────────────────────────────────
-# CMD 인자를 docker compose run 시 추가 전달 가능
-# 예) docker compose run --rm analyze-narrative --limit 5 --dry-run
-ENTRYPOINT ["python", "analyze_ad_narrative.py"]
+# docker-compose.analyze-narrative.yml 의 entrypoint 로 override 됨
+# (analyze_ad_narrative_gemini.py 실행)
+ENTRYPOINT ["python", "analyze_ad_narrative_gemini.py"]
 CMD []

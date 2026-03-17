@@ -7,12 +7,17 @@ v2.2  : context_narrative 생성 (semantic 매칭)
 v2.5  : Phase A 정방향 씬 분절 도입 (_generate_scene_contexts 교체)
         - dialogue_segmenter.segment_video()로 영상 전체 씬 경계 탐지
         - 각 씬 내 프레임 균등 샘플링(3~5장) + 대사 동기화
-        - Qwen2-VL analyse_scene_context()로 멀티모달 씬 컨텍스트 생성
+        - Qwen2-VL/Gemini Flash analyse_scene_context()로 멀티모달 씬 컨텍스트 생성
         - analysis_scene 테이블 INSERT
         - 각 침묵 구간 → 소속 씬의 narrative → analysis_audio.context_summary 할당
+v2.6  : VLM_BACKEND 환경변수로 Qwen2-VL / Gemini Flash 백엔드 선택 지원
 
 실행:
     python -m step2_analysis.consumer
+
+환경변수:
+    VLM_BACKEND   : "qwen" (기본) 또는 "gemini"
+    GEMINI_API_KEY: Gemini 백엔드 사용 시 필수
 """
 
 import logging
@@ -27,9 +32,15 @@ from step2_analysis import (
     audio_analysis,
     audio_transcription,
     dialogue_segmenter,
-    vision_qwen,
     vision_yolo as vision_rcnn,  # YOLOv8l replaces Faster R-CNN
 )
+
+# ── VLM 백엔드 선택 ─────────────────────────────────────────────────────────
+_VLM_BACKEND = getattr(config, "VLM_BACKEND", "qwen").lower()
+if _VLM_BACKEND == "gemini":
+    from step2_analysis import vision_gemini as _vlm  # type: ignore
+else:
+    from step2_analysis import vision_qwen as _vlm  # type: ignore
 
 setup_logging("step2")
 logger = logging.getLogger(__name__)
@@ -323,10 +334,10 @@ def _generate_scene_contexts(
             frame_paths, s_start, s_end, n=4
         )
 
-        # ── Qwen2-VL 멀티모달 씬 컨텍스트 생성 ─────────────────────────────
+        # ── VLM 멀티모달 씬 컨텍스트 생성 (Qwen2-VL 또는 Gemini Flash) ────────
         narrative = ""
         try:
-            narrative = vision_qwen.analyse_scene_context(
+            narrative = _vlm.analyse_scene_context(
                 frame_paths=sampled_frames,
                 transcript_text=transcript_text,
                 scene_start_sec=s_start,
@@ -415,11 +426,11 @@ def run(job_id: str) -> None:
         vision_rcnn.analyse_frames(frame_paths, on_batch=_on_rcnn_batch)
         logger.info("[%s] YOLO complete — %d frames streamed to DB", job_id, frames_inserted)
 
-        # ── Vision: Qwen2-VL (fixed-interval sampling → range UPDATE) ─────────
+        # ── Vision: VLM 고정 간격 샘플링 → scene_description range UPDATE ──────
         # 이 패스는 analysis_vision_context.scene_description 채우기용.
         # Phase A의 씬 단위 멀티프레임 분석과 별개.
-        logger.info("[%s] Starting Qwen2-VL fixed-interval sampling ...", job_id)
-        qwen_descriptions = vision_qwen.analyse_frames(frame_paths)
+        logger.info("[%s] Starting VLM fixed-interval sampling (backend=%s) ...", job_id, _VLM_BACKEND)
+        qwen_descriptions = _vlm.analyse_frames(frame_paths)
         _update_scene_descriptions(job_id, qwen_descriptions, total_frames)
 
         # ── Audio: silence detection ───────────────────────────────────────────
