@@ -22,5 +22,8 @@ accelerate>=0.33.0
 qwen-vl-utils>=0.0.2
 
 # ── 유틸리티 ─────────────────────────────────────────────────────────────────
+
+# ── 의미 임베딩 (dialogue_segmenter 씨 경계 감지) ────────────────────
+sentence-transformers>=2.7.0
 numpy>=1.26.0
 python-dotenv>=1.0.0
