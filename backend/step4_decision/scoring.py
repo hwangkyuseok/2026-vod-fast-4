@@ -17,6 +17,8 @@ v2.7  : 맥락 부적합 광고 억제
 v2.10 : 카테고리 매칭 보너스 추가
         - ad_category NULL이면 보너스 없음 (graceful degradation)
         - context_narrative ↔ ad_category 유사도 ≥ 0.35 → +10점
+v2.12 : Step3 메시지 경량화 대응 — job_id만 수신 후 DB에서 직접 candidates 조회
+        (이전: candidates 전체를 RabbitMQ 메시지로 수신 → 97,161개 시 연결 타임아웃)
 
 스코어링 공식 (v2.10):
   [1차 필터] similarity < NARRATIVE_THRESHOLD(0.50) → Skip
@@ -41,6 +43,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from common import config, db as _db, rabbitmq as mq
 from common.logging_setup import setup_logging
 from step4_decision import embedding_scorer
+from step3_persistence.pipeline import build_candidates
 
 setup_logging("step4")
 logger = logging.getLogger(__name__)
@@ -422,7 +425,9 @@ def run(job_id: str, candidates: list[dict]) -> None:
 
 
 def _on_message(payload: dict) -> None:
-    run(payload["job_id"], payload.get("candidates", []))
+    job_id = payload["job_id"]
+    candidates = build_candidates(job_id)
+    run(job_id, candidates)
 
 
 if __name__ == "__main__":

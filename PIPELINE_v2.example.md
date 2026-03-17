@@ -5,7 +5,7 @@
 > 실제 설정은 `PIPELINE_v2.md` (gitignore에 등록됨)에서 관리하세요.
 
 > **2026_VOD_FAST_4** | 비디오 문맥 분석 기반 동적 광고 오버레이 시스템
-> 현재 버전: **v2.11 (VLM Backend Selection + Scene Segmentation Fix)**
+> 현재 버전: **v2.12 (Step3→Step4 메시지 경량화 — RabbitMQ 페이로드 분리)**
 
 ---
 
@@ -220,9 +220,17 @@ docker-compose -f docker-compose.pipeline.yml run --rm step5-api python populate
 > 기존 로직은 짧은 씬이 연속될 때 모두 앞으로 합쳐져 전체 영상이 씬 1개로 병합되는 문제가 있었음.
 > 수정: 누적 씬이 `MIN_WINDOW_SEC` 충족 시 새 씬을 시작하도록 변경.
 
+### Step 3→Step 4 메시지 경량화 (v2.12)
+
+| 항목 | 변경 전 (v2.11) | 변경 후 (v2.12) |
+|------|----------------|----------------|
+| Step3 발행 페이로드 | `{"job_id": ..., "candidates": [...97,161개...]}` (~140MB) | `{"job_id": ...}` (~수십 바이트) |
+| Step4 candidates 출처 | RabbitMQ 메시지 | DB 직접 조회 (`build_candidates(job_id)`) |
+| 문제 | consumer_timeout → Step4 미실행 | 해소 |
+
 ---
 
-## 8. 스코어링 로직 (v2.10)
+## 8. 스코어링 로직 (v2.12)
 
 ### 필터
 

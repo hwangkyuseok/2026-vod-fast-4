@@ -4,13 +4,16 @@ Step 3 — Ad-Matching Persistence Pipeline
 v2.0  : 기본 silence × ad Cartesian Product
 v2.5  : target_narrative 후보 포함
 v2.6  : Scene-driven 전환 — analysis_audio(침묵) 대신 analysis_scene(씬)을 후보 기준으로 사용
+v2.12 : Step4 메시지 경량화 — candidates 전체 대신 job_id만 전송
+        (97,161개 candidates를 단일 RabbitMQ 메시지로 전송 시 연결 타임아웃 발생 방지)
+        Step4가 DB에서 직접 candidates를 조회하도록 변경.
 
 Consumes from QUEUE_STEP3.
 
 For every scene in analysis_scene for this job:
   1. Cross with all ad_inventory entries.
   2. Build candidate list: (scene, ad) pairs with context_narrative.
-  3. Pass as JSON payload to QUEUE_STEP4 for scoring.
+  3. Pass job_id only to QUEUE_STEP4 — Step4 fetches candidates from DB directly.
 
 No additional DB writes at this step.
 
@@ -126,8 +129,8 @@ def run(job_id: str) -> None:
     try:
         candidates = build_candidates(job_id)
         _update_job_status(job_id, "deciding")
-        mq.publish(config.QUEUE_STEP4, {"job_id": job_id, "candidates": candidates})
-        logger.info("[%s] Step-3 complete → published %d candidates", job_id, len(candidates))
+        mq.publish(config.QUEUE_STEP4, {"job_id": job_id})
+        logger.info("[%s] Step-3 complete → published job_id (%d candidates in DB)", job_id, len(candidates))
     except Exception as exc:
         _update_job_status(job_id, "failed", str(exc))
         logger.exception("[%s] Step-3 failed: %s", job_id, exc)
