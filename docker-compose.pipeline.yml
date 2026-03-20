@@ -1,11 +1,21 @@
 # docker-compose.pipeline.yml
 # ─────────────────────────────────────────────────────────────────────────────
-# VOD 광고 오버레이 파이프라인 — 전체 서비스 구성 (v2.13)
+# VOD 광고 오버레이 파이프라인 — 전체 서비스 구성 (v2.14)
 #
 # 서버 배포 경로:
 #   백엔드  : /app/Docker/pipeline/
 #   프론트  : /app/Docker/frontend/
 #   이 파일 : /app/Docker/pipeline/
+#
+# 이미지 구조 (서비스별 완전 분리):
+#   vod-step1    : step1  (Dockerfile.step1)
+#   vod-step2a   : step2-a (Dockerfile.step2a)
+#   vod-step2b   : step2-b (Dockerfile.step2b)
+#   vod-step2c   : step2-c (Dockerfile.step2c)
+#   vod-step3    : step3  (Dockerfile.step3)
+#   vod-step4    : step4  (Dockerfile.step4)
+#   vod-step5    : step5-api (Dockerfile.step5)
+#   vod-frontend : frontend (Dockerfile.frontend)
 #
 # 최초 실행:
 #   cp .env.example .env  # .env 파일 생성 후 실제 값 입력
@@ -16,7 +26,7 @@
 #   docker-compose -f docker-compose.pipeline.yml down
 #
 # 로그 확인:
-#   docker-compose -f docker-compose.pipeline.yml logs -f step2
+#   docker-compose -f docker-compose.pipeline.yml logs -f step2-a
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
@@ -25,9 +35,8 @@ services:
   step1:
     build:
       context: /app/Docker/pipeline
-      dockerfile: Dockerfile.backend
-    image: vod-backend:latest
-    command: ["python", "-m", "step1_preprocessing.pipeline", "--consume"]
+      dockerfile: Dockerfile.step1
+    image: vod-step1:latest
     restart: unless-stopped
     environment:
       DB_HOST: "${DB_HOST}"
@@ -138,10 +147,12 @@ services:
       - /app/HelloVision/data/logs:/app/storage/logs
       - step2c_model_cache:/models
 
-  # ── Step 3: 저장 (씬 세그먼테이션 결과 DB 저장) ───────────────────────────
+  # ── Step 3: 후보 페어 생성 (analysis_scene × ad_inventory) ────────────────
   step3:
-    image: vod-backend:latest
-    command: ["python", "-m", "step3_persistence.pipeline"]
+    build:
+      context: /app/Docker/pipeline
+      dockerfile: Dockerfile.step3
+    image: vod-step3:latest
     restart: unless-stopped
     depends_on:
       - step1
@@ -164,8 +175,10 @@ services:
 
   # ── Step 4: 스코어링 / 광고 결정 ─────────────────────────────────────────
   step4:
-    image: vod-backend:latest
-    command: ["python", "-m", "step4_decision.scoring", "--consume"]
+    build:
+      context: /app/Docker/pipeline
+      dockerfile: Dockerfile.step4
+    image: vod-step4:latest
     restart: unless-stopped
     depends_on:
       - step1
@@ -187,12 +200,14 @@ services:
     volumes:
       - /app/HelloVision/data/storage:/app/storage
       - /app/HelloVision/data/logs:/app/storage/logs
-      - sentence_model_cache:/models
+      - step4_model_cache:/models
 
   # ── Step 5: FastAPI 서버 ──────────────────────────────────────────────────
   step5-api:
-    image: vod-backend:latest
-    command: ["python", "-m", "step5_api.server"]
+    build:
+      context: /app/Docker/pipeline
+      dockerfile: Dockerfile.step5
+    image: vod-step5:latest
     restart: unless-stopped
     depends_on:
       - step1
@@ -249,5 +264,5 @@ volumes:
     driver: local
   step2c_model_cache:
     driver: local
-  sentence_model_cache:
+  step4_model_cache:
     driver: local

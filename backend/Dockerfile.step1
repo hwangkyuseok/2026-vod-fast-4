@@ -1,0 +1,37 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Dockerfile.step1
+# step1 전용 컨테이너 — 전처리 (ffmpeg 프레임/오디오 추출 + scenedetect)
+#
+# v2.14: 이미지 완전 분리 (vod-backend 공용 이미지 제거)
+# ─────────────────────────────────────────────────────────────────────────────
+
+FROM python:3.11-slim
+
+# ── 시스템 패키지 ─────────────────────────────────────────────────────────────
+# ffmpeg    : 영상 디먹싱 / 프레임 추출
+# libpq-dev : psycopg2 빌드 의존성
+# libgl1 / libglib2.0-0 : OpenCV headless 런타임
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ffmpeg \
+        libpq-dev \
+        libgl1 \
+        libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# ── 의존성 ───────────────────────────────────────────────────────────────────
+COPY requirements.step1.txt .
+RUN pip install --no-cache-dir -r requirements.step1.txt
+
+# ── 소스코드 복사 ─────────────────────────────────────────────────────────────
+COPY common/              ./common/
+COPY step1_preprocessing/ ./step1_preprocessing/
+
+# ── 런타임 디렉토리 ───────────────────────────────────────────────────────────
+RUN mkdir -p /app/storage/logs /app/storage/jobs
+
+ENV PYTHONUNBUFFERED=1
+
+CMD ["python", "-m", "step1_preprocessing.pipeline", "--consume"]

@@ -103,14 +103,17 @@ ssh <SSH_USER>@<YOUR_SERVER_IP>
 
 ## 3. Docker 배포 구조
 
-### 이미지 6개 / 서비스 8개 (v2.13)
+### 이미지 8개 / 서비스 8개 (v2.14 — 서비스별 완전 분리)
 
-| 이미지 | 빌드 대상 | 사용 서비스 |
-|--------|----------|-----------|
-| `vod-backend:latest` | `Dockerfile.backend` | step1, step3, step4, step5-api |
+| 이미지 | Dockerfile | 서비스 |
+|--------|-----------|--------|
+| `vod-step1:latest` | `Dockerfile.step1` | step1 (전처리) |
 | `vod-step2a:latest` | `Dockerfile.step2a` | step2-a (YOLO + VLM) |
 | `vod-step2b:latest` | `Dockerfile.step2b` | step2-b (침묵 + Whisper) |
 | `vod-step2c:latest` | `Dockerfile.step2c` | step2-c (Phase A gate) |
+| `vod-step3:latest` | `Dockerfile.step3` | step3 (후보 페어 생성) |
+| `vod-step4:latest` | `Dockerfile.step4` | step4 (스코어링) |
+| `vod-step5:latest` | `Dockerfile.step5` | step5-api (FastAPI) |
 | `vod-frontend:latest` | `Dockerfile.frontend` | frontend |
 
 ### 볼륨 마운트
@@ -158,13 +161,12 @@ scp backend/analyze_ad_narrative_gemini.py <SSH_USER>@<SERVER_IP>:/path/to/analy
 ### 4.2 Docker 이미지 빌드
 
 ```bash
-# step2-a/b/c만 변경된 경우
-docker-compose -f docker-compose.pipeline.yml build step2-a step2-b step2-c
-docker-compose -f docker-compose.pipeline.yml up -d --force-recreate step2-a step2-b step2-c
-
-# step1/step4 (vod-backend) 변경된 경우
+# 개별 빌드 (변경된 서비스만)
 docker-compose -f docker-compose.pipeline.yml build step1
-docker-compose -f docker-compose.pipeline.yml up -d --force-recreate step1 step3 step4 step5-api
+docker-compose -f docker-compose.pipeline.yml build step2-a step2-b step2-c
+docker-compose -f docker-compose.pipeline.yml build step3
+docker-compose -f docker-compose.pipeline.yml build step4
+docker-compose -f docker-compose.pipeline.yml build step5-api
 
 # 전체 빌드
 docker-compose -f docker-compose.pipeline.yml build
@@ -232,13 +234,13 @@ docker-compose -f docker-compose.pipeline.yml run --rm step5-api python populate
 
 | Step | 파일 | 이미지 |
 |------|------|--------|
-| Step 1 | `step1_preprocessing/pipeline.py` | vod-backend |
+| Step 1 | `step1_preprocessing/pipeline.py` | vod-step1 |
 | Step 2-A | `step2_analysis/consumer_a.py` | vod-step2a |
 | Step 2-B | `step2_analysis/consumer_b.py` | vod-step2b |
 | Step 2-C | `step2_analysis/consumer_c.py` | vod-step2c |
-| Step 3 | `step3_persistence/pipeline.py` | vod-backend |
-| Step 4 | `step4_decision/scoring.py` | vod-backend |
-| Step 5 | `step5_api/server.py` | vod-backend |
+| Step 3 | `step3_persistence/pipeline.py` | vod-step3 |
+| Step 4 | `step4_decision/scoring.py` | vod-step4 |
+| Step 5 | `step5_api/server.py` | vod-step5 |
 
 ### Step 2 씬 세그멘테이션 (v2.11)
 

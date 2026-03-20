@@ -1,0 +1,41 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Dockerfile.step4
+# step4 전용 컨테이너 — 스코어링 / 광고 결정
+#
+# v2.14: 이미지 완전 분리 (vod-backend 공용 이미지 제거)
+#   - sentence-transformers : narrative 유사도 임베딩
+# ─────────────────────────────────────────────────────────────────────────────
+
+FROM python:3.11-slim
+
+# ── 시스템 패키지 ─────────────────────────────────────────────────────────────
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# ── CPU-only PyTorch (sentence-transformers 의존) ─────────────────────────────
+RUN pip install --no-cache-dir \
+    torch==2.5.1 \
+    torchvision==0.20.1 \
+    --index-url https://download.pytorch.org/whl/cpu
+
+# ── 나머지 의존성 ─────────────────────────────────────────────────────────────
+COPY requirements.step4.txt .
+RUN pip install --no-cache-dir -r requirements.step4.txt
+
+# ── 소스코드 복사 ─────────────────────────────────────────────────────────────
+COPY common/           ./common/
+COPY step3_persistence/ ./step3_persistence/
+COPY step4_decision/   ./step4_decision/
+
+# ── 런타임 디렉토리 ───────────────────────────────────────────────────────────
+RUN mkdir -p /app/storage/logs /app/storage/jobs
+
+ENV PYTHONUNBUFFERED=1
+ENV HF_HOME=/models
+ENV TRANSFORMERS_CACHE=/models
+
+CMD ["python", "-m", "step4_decision.scoring", "--consume"]
