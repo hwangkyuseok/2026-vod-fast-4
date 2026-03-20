@@ -24,6 +24,10 @@ CREATE TABLE IF NOT EXISTS job_history (
 CREATE INDEX IF NOT EXISTS idx_job_history_job_id ON job_history(job_id);
 CREATE INDEX IF NOT EXISTS idx_job_history_status  ON job_history(status);
 
+-- v2.13: Step2 분리를 위한 gate 플래그 컬럼 (기존 DB 마이그레이션용)
+ALTER TABLE job_history ADD COLUMN IF NOT EXISTS step2a_done BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE job_history ADD COLUMN IF NOT EXISTS step2b_done BOOLEAN NOT NULL DEFAULT FALSE;
+
 -- ─── 2. Video Preprocessing Info ────────────────────────────
 CREATE TABLE IF NOT EXISTS video_preprocessing_info (
     id               SERIAL PRIMARY KEY,

@@ -1,0 +1,48 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Dockerfile.step2c
+# step2-c 전용 컨테이너 — Phase A (씬 분절 + VLM narrative)
+#
+# v2.13: Step2 분리
+#   - sentence-transformers : 대사 임베딩 기반 씬 경계 탐지
+#   - VLM (Gemini / Qwen2-VL) : 씬별 멀티모달 narrative 생성
+#   - DB 플래그 게이트: step2a_done AND step2b_done 모두 TRUE여야 실행
+#
+# Run:
+#   docker-compose -f docker-compose.pipeline.yml up step2-c
+# ─────────────────────────────────────────────────────────────────────────────
+
+FROM python:3.11-slim
+
+# ── 시스템 패키지 ─────────────────────────────────────────────────────────────
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        libpq-dev \
+        libgl1 \
+        libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# ── CPU-only PyTorch (sentence-transformers / Qwen2-VL 의존) ─────────────────
+RUN pip install --no-cache-dir \
+    torch==2.5.1 \
+    torchvision==0.20.1 \
+    --index-url https://download.pytorch.org/whl/cpu
+
+# ── 나머지 의존성 ─────────────────────────────────────────────────────────────
+COPY requirements.step2c.txt .
+RUN pip install --no-cache-dir -r requirements.step2c.txt
+
+# ── 소스코드 복사 ─────────────────────────────────────────────────────────────
+COPY common/         ./common/
+COPY step2_analysis/ ./step2_analysis/
+
+# ── 런타임 디렉토리 ───────────────────────────────────────────────────────────
+RUN mkdir -p /app/storage/logs /app/storage/jobs
+
+# ── 환경변수 기본값 ───────────────────────────────────────────────────────────
+ENV PYTHONUNBUFFERED=1
+ENV HF_HOME=/models
+ENV TRANSFORMERS_CACHE=/models
+
+CMD ["python", "-m", "step2_analysis.consumer_c"]
