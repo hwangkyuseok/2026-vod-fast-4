@@ -1,6 +1,6 @@
 # docker-compose.pipeline.yml
 # ─────────────────────────────────────────────────────────────────────────────
-# VOD 광고 오버레이 파이프라인 — 전체 서비스 구성 (v1.0)
+# VOD 광고 오버레이 파이프라인 — 전체 서비스 구성 (v2.13)
 #
 # 서버 배포 경로:
 #   백엔드  : /app/Docker/pipeline/
@@ -47,13 +47,42 @@ services:
       - /app/HelloVision/data/storage:/app/storage
       - /app/HelloVision/data/logs:/app/storage/logs
 
-  # ── Step 2: 분석 (YOLO / Whisper / Qwen2-VL) ──────────────────────────────
-  step2:
+  # ── Step 2-A: 비전 분석 (YOLO + VLM 고정 샘플링) ─────────────────────────
+  step2-a:
     build:
       context: /app/Docker/pipeline
-      dockerfile: Dockerfile.step2
-    image: vod-step2:latest
-    command: ["python", "-m", "step2_analysis.consumer"]
+      dockerfile: Dockerfile.step2a
+    image: vod-step2a:latest
+    restart: unless-stopped
+    environment:
+      DB_HOST: "${DB_HOST}"
+      DB_PORT: "${DB_PORT:-5432}"
+      DB_NAME: "${DB_NAME}"
+      DB_USER: "${DB_USER}"
+      DB_PASSWORD: "${DB_PASSWORD}"
+      RABBITMQ_HOST: "${RABBITMQ_HOST}"
+      RABBITMQ_PORT: "${RABBITMQ_PORT:-5672}"
+      RABBITMQ_USER: "${RABBITMQ_USER}"
+      RABBITMQ_PASSWORD: "${RABBITMQ_PASSWORD}"
+      QUEUE_PREFIX: "${QUEUE_PREFIX:-prod}"
+      STORAGE_BASE: "/app/storage"
+      VLM_BACKEND: "${VLM_BACKEND:-gemini}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY}"
+      GEMINI_MODEL: "${GEMINI_MODEL:-gemini-2.0-flash}"
+      TZ: "${TZ:-Asia/Seoul}"
+      HF_HOME: "/models"
+      TRANSFORMERS_CACHE: "/models"
+    volumes:
+      - /app/HelloVision/data/storage:/app/storage
+      - /app/HelloVision/data/logs:/app/storage/logs
+      - step2a_model_cache:/models
+
+  # ── Step 2-B: 오디오 분석 (침묵 감지 + Whisper STT) ──────────────────────
+  step2-b:
+    build:
+      context: /app/Docker/pipeline
+      dockerfile: Dockerfile.step2b
+    image: vod-step2b:latest
     restart: unless-stopped
     environment:
       DB_HOST: "${DB_HOST}"
@@ -68,7 +97,36 @@ services:
       QUEUE_PREFIX: "${QUEUE_PREFIX:-prod}"
       STORAGE_BASE: "/app/storage"
       WHISPER_MODEL: "${WHISPER_MODEL:-small}"
-      # ── VLM 백엔드 선택: "qwen" (로컬) 또는 "gemini" (API) ─────────────────
+      TZ: "${TZ:-Asia/Seoul}"
+      HF_HOME: "/models"
+      TRANSFORMERS_CACHE: "/models"
+    volumes:
+      - /app/HelloVision/data/storage:/app/storage
+      - /app/HelloVision/data/logs:/app/storage/logs
+      - step2b_model_cache:/models
+
+  # ── Step 2-C: Phase A (씬 분절 + VLM narrative, DB 플래그 게이트) ─────────
+  step2-c:
+    build:
+      context: /app/Docker/pipeline
+      dockerfile: Dockerfile.step2c
+    image: vod-step2c:latest
+    restart: unless-stopped
+    depends_on:
+      - step2-a
+      - step2-b
+    environment:
+      DB_HOST: "${DB_HOST}"
+      DB_PORT: "${DB_PORT:-5432}"
+      DB_NAME: "${DB_NAME}"
+      DB_USER: "${DB_USER}"
+      DB_PASSWORD: "${DB_PASSWORD}"
+      RABBITMQ_HOST: "${RABBITMQ_HOST}"
+      RABBITMQ_PORT: "${RABBITMQ_PORT:-5672}"
+      RABBITMQ_USER: "${RABBITMQ_USER}"
+      RABBITMQ_PASSWORD: "${RABBITMQ_PASSWORD}"
+      QUEUE_PREFIX: "${QUEUE_PREFIX:-prod}"
+      STORAGE_BASE: "/app/storage"
       VLM_BACKEND: "${VLM_BACKEND:-gemini}"
       GEMINI_API_KEY: "${GEMINI_API_KEY}"
       GEMINI_MODEL: "${GEMINI_MODEL:-gemini-2.0-flash}"
@@ -78,7 +136,7 @@ services:
     volumes:
       - /app/HelloVision/data/storage:/app/storage
       - /app/HelloVision/data/logs:/app/storage/logs
-      - qwen_model_cache:/models
+      - step2c_model_cache:/models
 
   # ── Step 3: 저장 (씬 세그먼테이션 결과 DB 저장) ───────────────────────────
   step3:
@@ -185,7 +243,11 @@ services:
 
 # ── Named Volumes ─────────────────────────────────────────────────────────────
 volumes:
-  qwen_model_cache:
+  step2a_model_cache:
+    driver: local
+  step2b_model_cache:
+    driver: local
+  step2c_model_cache:
     driver: local
   sentence_model_cache:
     driver: local

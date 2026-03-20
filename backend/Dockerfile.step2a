@@ -1,0 +1,47 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Dockerfile.step2a
+# step2-a 전용 컨테이너 — 비전 분석 (YOLO + VLM 고정 샘플링)
+#
+# v2.13: Step2 분리
+#   - YOLOv8l : 객체 탐지 / safe area 분석
+#   - VLM     : Gemini Flash API 또는 Qwen2-VL 씬 설명
+#
+# Run:
+#   docker-compose -f docker-compose.pipeline.yml up step2-a
+# ─────────────────────────────────────────────────────────────────────────────
+
+FROM python:3.11-slim
+
+# ── 시스템 패키지 ─────────────────────────────────────────────────────────────
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        libpq-dev \
+        libgl1 \
+        libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# ── CPU-only PyTorch ──────────────────────────────────────────────────────────
+RUN pip install --no-cache-dir \
+    torch==2.5.1 \
+    torchvision==0.20.1 \
+    --index-url https://download.pytorch.org/whl/cpu
+
+# ── 나머지 의존성 ─────────────────────────────────────────────────────────────
+COPY requirements.step2a.txt .
+RUN pip install --no-cache-dir -r requirements.step2a.txt
+
+# ── 소스코드 복사 ─────────────────────────────────────────────────────────────
+COPY common/         ./common/
+COPY step2_analysis/ ./step2_analysis/
+
+# ── 런타임 디렉토리 ───────────────────────────────────────────────────────────
+RUN mkdir -p /app/storage/logs /app/storage/jobs
+
+# ── 환경변수 기본값 ───────────────────────────────────────────────────────────
+ENV PYTHONUNBUFFERED=1
+ENV HF_HOME=/models
+ENV TRANSFORMERS_CACHE=/models
+
+CMD ["python", "-m", "step2_analysis.consumer_a"]

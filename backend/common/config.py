@@ -32,14 +32,17 @@ RABBITMQ_URL      = (
 
 # Queue names
 # QUEUE_PREFIX로 환경 간 큐 분리:
-#   Windows 로컬  → 기본값 "dev"  → vod.dev.step1.preprocess ...
+#   Windows 로컬  → 기본값 "dev"  → vod.내이름.dev.step1.preprocess ...
 #   Linux/Docker  → 기본값 "prod" → vod.prod.step1.preprocess ...
 # 같은 RabbitMQ 브로커를 공유할 때 메시지 혼선 방지.
 # 환경변수 QUEUE_PREFIX 로 명시적 지정 가능 (e.g. "staging").
 _QUEUE_PREFIX = os.getenv("QUEUE_PREFIX", "dev" if _IS_WINDOWS else "prod")
 
 QUEUE_STEP1 = f"vod.{_QUEUE_PREFIX}.step1.preprocess"
-QUEUE_STEP2 = f"vod.{_QUEUE_PREFIX}.step2.analysis"
+QUEUE_STEP2 = f"vod.{_QUEUE_PREFIX}.step2.analysis"       # legacy (단일 컨테이너용, 유지)
+QUEUE_STEP2A = f"vod.{_QUEUE_PREFIX}.step2a.vision"        # v2.13: 2-A (YOLO + VLM)
+QUEUE_STEP2B = f"vod.{_QUEUE_PREFIX}.step2b.audio"         # v2.13: 2-B (침묵 + Whisper)
+QUEUE_STEP2_GATE = f"vod.{_QUEUE_PREFIX}.step2.gate"       # v2.13: 2-C gate (Phase A)
 QUEUE_STEP3 = f"vod.{_QUEUE_PREFIX}.step3.persistence"
 QUEUE_STEP4 = f"vod.{_QUEUE_PREFIX}.step4.decision"
 
