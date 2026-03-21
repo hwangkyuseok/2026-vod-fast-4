@@ -40,7 +40,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from common import config, db as _db, rabbitmq as mq
 from common.logging_setup import setup_logging
-from step4_decision import embedding_scorer, pre_filter
+from step4_decision import embedding_scorer, pre_filter, cross_encoder_scorer
 # v2.13: build_candidates는 _on_message 내부에서 lazy import
 # (모듈 레벨 import 시 setup_logging("step3")이 실행되어 step4 log handler 교체됨)
 
@@ -388,25 +388,36 @@ def run(job_id: str, candidates: list[dict]) -> None:
         # target_narrative가 있는 후보에 한해 N×M을 단일 행렬 곱으로 처리.
         # legacy(ad_name+mood) 후보는 _compute_score 내에서 개별 처리됨.
         sim_lookup: dict[tuple[str, str], float] = {}
-        if embedding_scorer.is_available() and candidates:
+        if candidates:
             pairs = [
                 (c.get("context_narrative") or "", c.get("target_narrative") or "")
                 for c in candidates
                 if c.get("context_narrative") and c.get("target_narrative")
             ]
             if pairs:
-                unique_ctx = list(dict.fromkeys(p[0] for p in pairs))
-                unique_tgt = list(dict.fromkeys(p[1] for p in pairs))
-                sim_matrix = embedding_scorer.batch_similarity_matrix(unique_ctx, unique_tgt)
-                ctx_idx = {t: i for i, t in enumerate(unique_ctx)}
-                tgt_idx = {t: i for i, t in enumerate(unique_tgt)}
-                for ctx, tgt in pairs:
-                    if (ctx, tgt) not in sim_lookup:
+                unique_pairs = list(dict.fromkeys(pairs))
+
+                if cross_encoder_scorer.is_available():
+                    # Cross-Encoder 배치 추론 (정밀 평가)
+                    scores = cross_encoder_scorer.batch_score(unique_pairs)
+                    sim_lookup = dict(zip(unique_pairs, scores))
+                    logger.info(
+                        "[%s] Cross-Encoder batch: %d pair(s) scored.",
+                        job_id, len(sim_lookup),
+                    )
+                elif embedding_scorer.is_available():
+                    # Fallback: MiniLM 코사인 유사도
+                    unique_ctx = list(dict.fromkeys(p[0] for p in unique_pairs))
+                    unique_tgt = list(dict.fromkeys(p[1] for p in unique_pairs))
+                    sim_matrix = embedding_scorer.batch_similarity_matrix(unique_ctx, unique_tgt)
+                    ctx_idx = {t: i for i, t in enumerate(unique_ctx)}
+                    tgt_idx = {t: i for i, t in enumerate(unique_tgt)}
+                    for ctx, tgt in unique_pairs:
                         sim_lookup[(ctx, tgt)] = float(sim_matrix[ctx_idx[ctx], tgt_idx[tgt]])
-                logger.info(
-                    "[%s] Batch similarity: %d pair(s) (%d ctx × %d ads) pre-computed.",
-                    job_id, len(sim_lookup), len(unique_ctx), len(unique_tgt),
-                )
+                    logger.info(
+                        "[%s] Fallback MiniLM batch: %d pair(s) (%d ctx × %d ads) pre-computed.",
+                        job_id, len(sim_lookup), len(unique_ctx), len(unique_tgt),
+                    )
 
         # ── v2.13: vision frames + silence intervals 사전 일괄 조회 ─────────
         # 루프 내 씬별 DB 쿼리(O(N))를 루프 전 1회 전체 조회(O(1))로 개선.
