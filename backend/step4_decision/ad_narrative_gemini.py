@@ -28,7 +28,7 @@ import time
 from pathlib import Path
 
 import sys
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from google import genai
 from google.genai import types
