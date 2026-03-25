@@ -1,0 +1,11 @@
+=== COCO128 (Ground Truth) Baseline Metrics ===
+
+Model: YOLOv8n
+Precision: 0.6767
+Recall: 0.4995
+F1: 0.5747
+
+Model: YOLOv8l
+Precision: 0.7832
+Recall: 0.7257
+F1: 0.7534
