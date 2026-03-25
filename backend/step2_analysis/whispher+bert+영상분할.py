@@ -1,6 +1,10 @@
 import os
 import glob
 import subprocess
+import cv2
+import imageio_ffmpeg
+import csv
+
 try:
     from faster_whisper import WhisperModel
 except ImportError:
@@ -8,13 +12,14 @@ except ImportError:
     print("명령어 예시: pip install faster-whisper")
 
 def get_video_duration(filename):
-    """ffprobe를 이용해 비디오 길이를 가져옵니다."""
-    result = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration", 
-         "-of", "default=noprint_wrappers=1:nokey=1", filename],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT
-    )
-    return float(result.stdout.strip())
+    """cv2를 이용해 비디오 길이를 가져옵니다."""
+    cap = cv2.VideoCapture(filename)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+    cap.release()
+    if fps > 0:
+        return frames / fps
+    return 0.0
 
 def main():
     video_path = r"data\videos\언더커버 미쓰홍.E16.260308.720p-NEXT.mp4"
@@ -74,7 +79,11 @@ def main():
         except Exception as e:
             print(f"[{sf}] 길이 측정 실패: {e}")
 
-    print("\n=== 3. 대사(문맥) 기준 타임테이블에 맞춰 Scene 병합 ===")
+    print("\n=== 3. 대사(문맥) 기준 타임테이블에 맞춰 Scene 병합 및 CSV 생성 ===")
+    
+    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+    csv_data = [["Filename", "Start Time(s)", "End Time(s)", "Context Text", "Merged Original Scenes"]]
+    
     # dialogues에 있는 대사 타임아웃에 겹치는 scene들을 찾아서 병합
     for idx, d in enumerate(dialogues):
         d_start = d["start"]
@@ -97,16 +106,27 @@ def main():
         list_file_path = os.path.join(output_merged_folder, f"list_{idx}.txt")
         with open(list_file_path, "w", encoding="utf-8") as lf:
             for sfp in intersect_scenes:
-                # Windows 환경 고려 절대/상대 경로 이스케이프
-                lf.write(f"file '../../{sfp}'\n".replace("\\", "/"))
+                # Windows 환경 고려 절대경로 처리
+                abs_path = os.path.abspath(sfp).replace("\\", "/")
+                lf.write(f"file '{abs_path}'\n")
                 
-        out_filename = os.path.join(output_merged_folder, f"dialogue_{idx+1:04d}.mp4")
+        out_filename_only = f"dialogue_{idx+1:04d}.mp4"
+        out_filepath = os.path.join(output_merged_folder, out_filename_only)
+        
+        # CSV 메타데이터 추가
+        csv_data.append([
+            out_filename_only,
+            f"{d_start:.2f}",
+            f"{d_end:.2f}",
+            d_text,
+            "|".join([os.path.basename(s) for s in intersect_scenes])
+        ])
         
         # ffmpeg로 재인코딩 없이(copy) 병합
         cmd = [
-            "ffmpeg", "-y", "-f", "concat", "-safe", "0", 
+            ffmpeg_exe, "-y", "-f", "concat", "-safe", "0", 
             "-i", list_file_path, 
-            "-c", "copy", out_filename
+            "-c", "copy", out_filepath
         ]
         
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -115,7 +135,14 @@ def main():
         if os.path.exists(list_file_path):
             os.remove(list_file_path)
 
-    print("\n모든 작업이 완료되었습니다! 결과 폴더:", output_merged_folder)
+    # 협업용 CSV 저장
+    csv_path = os.path.join(output_merged_folder, "dialogue_metadata.csv")
+    with open(csv_path, "w", encoding="utf-8-sig", newline="") as cf:
+        writer = csv.writer(cf)
+        writer.writerows(csv_data)
+
+    print(f"\n[OK] 메타데이터 CSV 생성 완료: {csv_path}")
+    print("모든 작업이 완료되었습니다! 결과 폴더:", output_merged_folder)
 
 if __name__ == "__main__":
     main()
