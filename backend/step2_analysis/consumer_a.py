@@ -53,6 +53,7 @@ def _insert_vision_batch(job_id: str, rows: list[dict]) -> None:
             r.get("safe_area_h"),
             r.get("object_density"),
             r.get("is_scene_cut", False),
+            r.get("detected_objects", "") or None,
         )
         for r in rows
     ]
@@ -62,8 +63,8 @@ def _insert_vision_batch(job_id: str, rows: list[dict]) -> None:
             INSERT INTO analysis_vision_context
                 (job_id, frame_index, timestamp_sec,
                  safe_area_x, safe_area_y, safe_area_w, safe_area_h,
-                 object_density, is_scene_cut)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                 object_density, is_scene_cut, detected_objects)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT DO NOTHING
             """,
             params,

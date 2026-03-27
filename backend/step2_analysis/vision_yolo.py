@@ -260,6 +260,13 @@ def analyse_frames(
         person_mask  = cls_ids == 0
         person_boxes = xyxy[person_mask] if person_mask.any() else np.empty((0, 4))
 
+        # 감지된 클래스명 수집 (쉼표 구분 문자열, 중복 제거)
+        if len(cls_ids) > 0:
+            detected_names = sorted({model.names[cid] for cid in cls_ids})
+            detected_objects_str = ", ".join(detected_names)
+        else:
+            detected_objects_str = ""
+
         safe = _compute_safe_area(frame_arr.shape, xyxy, person_boxes=person_boxes)
 
         # ── scene cut ──────────────────────────────────────────────────────
@@ -268,9 +275,10 @@ def analyse_frames(
         prev_gray = gray
 
         row = {
-            "frame_index":   int(idx),
-            "timestamp_sec": float(idx) / FRAME_EXTRACTION_FPS,  # absolute seconds
-            "is_scene_cut":  bool(cut),
+            "frame_index":    int(idx),
+            "timestamp_sec":  float(idx) / FRAME_EXTRACTION_FPS,  # absolute seconds
+            "is_scene_cut":   bool(cut),
+            "detected_objects": detected_objects_str,
             **safe,
         }
 
