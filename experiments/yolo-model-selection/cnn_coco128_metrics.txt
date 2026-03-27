@@ -1,6 +1,0 @@
-=== Faster R-CNN COCO128 Evaluation Metrics ===
-Score Threshold: 0.25
-Match IoU Threshold: 0.5
-Precision: 0.4096
-Recall: 0.8052
-F1 Score: 0.5430

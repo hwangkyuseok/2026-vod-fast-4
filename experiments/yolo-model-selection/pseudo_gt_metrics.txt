@@ -1,8 +1,0 @@
-=== Pseudo-GT Evaluation Metrics ===
-Total Reference (YOLOv8l) Objects: 715
-
-Model           | Precision  | Recall     | F1 Score  
--------------------------------------------------------
-YOLOv8n         | 0.7795     | 0.6476     | 0.7074    
-Faster R-CNN    | 0.6397     | 0.6853     | 0.6617    
-YOLOv8l         | 1.0000     | 1.0000     | 1.0000    

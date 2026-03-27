@@ -81,6 +81,7 @@ models/
 
 # ─── Private Pipeline Documentation (contains server IPs / credentials) ──────
 PIPELINE_v2.md
+COMMANDS.md
 
 # ─── Build / Package Artifacts ────────────────────────────────────────────────
 *.zip
