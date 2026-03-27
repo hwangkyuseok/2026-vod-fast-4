@@ -30,7 +30,8 @@ $dead   = 0
 # Log file map per service
 $logMap = @{
     step1    = "step1.log"
-    step2    = "step2.log"
+    step2a   = "step2a.log"
+    step2b   = "step2b.log"
     step3    = "step3.log"
     step4    = "step4.log"
     step5    = "step5_api.log"
