@@ -1,39 +1,38 @@
 """
 Step 4 — 최종 결정 (decision.py)
 ──────────────────────────────────
-1. Cross-Encoder로 모든 (씬, 광고) 쌍의 관련도 배치 스코어링 (0.0~1.0)
-2. 상위 30개만 선택 (성능 최적화)
-3. 각 후보에 대해:
-   - 사전 필터: 씬 길이, 유사도 임계값
-   - 슬라이딩 윈도우: 최적 광고 위치 탐색
-   - 다중 점수 계산: Base Score + Bonuses/Penalties
-4. 최종 점수로 광고 삽입 여부 결정
+병합 버전: GitHub v2.14 + scoring.py v3.1
 
-점수 공식 (Cross-Encoder 기반):
-  0~+80   Cross-Encoder score (0.40~1.0) → Base Score (0~+80)
-  +20     최적 윈도우 내 object_density ≤ 0.3 (빈 화면)
-  +15     최적 윈도우 내 침묵 구간 겹침
-  +10     ad_category 매칭 보너스 (NULL이면 미적용)
-  −40     최적 윈도우 내 object_density ≥ 0.7 (복잡한 화면)
+GitHub v2.14 반영:
+  - MiniLM pre-filter → Cross-Encoder 2단계 파이프라인
+  - DB prefetch + bisect 이진탐색 (O(1) DB 왕복)
+  - 모듈 분리 (pre_filter.py, cross_encoder_scorer.py)
+  - 시간 겹침만 제거 (30초 간격 강제 없음)
+
+scoring.py v3.1 반영:
+  - _score_candidate() 통합 스코어링 (윈도우+점수+코너 일체)
+  - Brand Safety (UNSAFE_KEYWORDS)
+  - 연속 density 점수 (-40 ~ +25)
+  - density trend (slope +3/-5)
+  - 침묵 보너스 8점 (transcript + audio 2중 확인)
+  - 4-코너 동등비교 배치 (TR→TL→BL→BR)
+
+스코어링 공식 (병합):
+  [0차 필터] Brand Safety — UNSAFE_KEYWORDS 포함 시 Skip
+  [1차 필터] pre_filter.passes() — 씬길이 + MiniLM 코사인유사도 (0.40)
+  [2차 필터] video_clip: scene_duration < ad_duration → Skip
+  ── 슬라이딩 윈도우 + 스코어링 통합 루프 ──
+    매 윈도우 위치(1초 단위)마다:
+      코너 겹침 = 0 → skip (이 윈도우만)
+      0~+80   semantic score (Cross-Encoder 또는 MiniLM fallback)
+      -40~+25 density 연속 점수 (선형)
+      +3/-5   density trend (하락 보너스는 density≤0.5일 때만)
+      +8      침묵 구간 겹침 (transcript+audio 2중 확인)
+      +10     ad_category 매칭 보너스
+      → total_score 계산, 최고점 윈도우 선택
+  ── 코너 배치 ──
+    프레임별 코너 겹침으로 4-코너 동등 비교 → 겹침 면적 최대 코너에 배치
   [최종]  score < MIN_SCORE_TO_KEEP(20) → 광고 없음 판정
-
-변경 이력:
-v2.0  : 기본 키워드 스코어링
-v2.2  : Semantic embedding (context_summary ↔ ad_name + target_mood 앙상블)
-v2.3  : 중복 INSERT 방지 (DELETE-before-INSERT), _pick_best_and_deduplicate()
-v2.5  : target_narrative 우선 1:1 semantic 매칭 (score_narrative_fit)
-v2.6  : Scene-driven 전환
-        - _find_best_overlay_window(): 씬 내 1초 슬라이딩 윈도우로 최적 타임스탬프 확정
-        - _get_silence_overlap(): 침묵 구간 겹침 시 가점
-v2.7  : 맥락 부적합 광고 억제
-        - NARRATIVE_THRESHOLD 0.30 → 0.50, SCORE_SEMANTIC_MIN_SIM 0.25 → 0.40
-        - MIN_SCORE_TO_KEEP 1 → 20
-v2.10 : 카테고리 매칭 보너스 추가 (ad_category NULL이면 graceful skip)
-v2.12 : Step3 메시지 경량화 — job_id만 수신 후 DB에서 candidates 직접 조회
-v2.13 : vision frames + silence intervals 사전 일괄 조회 (O(N) → O(1) DB 왕복)
-v2.14 : Cross-Encoder 배치 스코어링 후 상위 30개만 처리 (성능 최적화)
-        - cross_encoder_scorer.batch_score(): N×M 모든 쌍 스코어링
-        - Top-30 필터링: 높은 관련도의 후보만 추출
 
 Run:
     python -m step4_decision.decision
@@ -43,35 +42,123 @@ import bisect
 import logging
 from pathlib import Path
 
+import numpy
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from common import config, db as _db, rabbitmq as mq
 from common.logging_setup import setup_logging
 from step4_decision import embedding_scorer, pre_filter, cross_encoder_scorer
-# v2.13: build_candidates는 _on_message 내부에서 lazy import
-# (모듈 레벨 import 시 setup_logging("step3")이 실행되어 step4 log handler 교체됨)
 
 setup_logging("step4")
 logger = logging.getLogger(__name__)
 
-# ── 스코어링 상수 (v2.7) ──────────────────────────────────────────────────────
-# v2.7: 맥락 부적합 광고 억제
-#   NARRATIVE_THRESHOLD  0.30→0.50 : paraphrase-multilingual-MiniLM-L12-v2 모델에서
-#                                     0.3~0.5 구간은 "느슨하게 관련" 수준으로 맥락 부적합
-#   SCORE_SEMANTIC_MIN_SIM 0.25→0.40: 스케일링 기준선 상향 → 낮은 유사도 점수 억제
-#   MIN_SCORE_TO_KEEP      1→20    : 유사도 낮거나 밀도 불량 시 "광고 없음" 판정
-SCORE_LOW_DENSITY      = 20    # 최적 윈도우 object_density ≤ 0.3
-SCORE_SILENCE_BONUS    = 15    # 최적 윈도우 내 침묵 구간 겹침 가점
-SCORE_CATEGORY_BONUS   = 10    # ad_category ↔ context_narrative 유사도 ≥ 0.35 (NULL이면 미적용)
+# ── 스코어링 상수 ────────────────────────────────────────────────────────────
+SCORE_SILENCE_BONUS    = 8     # 침묵 보너스 (v3.1: 15→8, density 차이 뒤집지 않게)
+SCORE_CATEGORY_BONUS   = 10    # ad_category ↔ context_narrative 유사도 ≥ 0.35
 CATEGORY_SIM_THRESHOLD = 0.35  # 카테고리 보너스 적용 최소 유사도
-PENALTY_HIGH_DENSITY   = -40   # 최적 윈도우 object_density ≥ 0.7
 
-SCORE_SEMANTIC_MAX     = 80    # Cross-Encoder score 1.0 → base score +80점
-SCORE_SEMANTIC_MIN_SIM = 0.40  # Cross-Encoder 점수 스케일링 하한 (pre-filter threshold와 별개)
+SCORE_SEMANTIC_MAX     = 80    # similarity=1.0 → +80점
+SCORE_SEMANTIC_MIN_SIM = 0.40  # threshold 통과 후 스케일링 하한
 
 MIN_SCORE_TO_KEEP      = 20    # 이 미만 점수 후보 제거 → 맥락 부적합 광고 배제
 
+# ── Brand Safety (scoring.py v3.1) ───────────────────────────────────────────
+UNSAFE_KEYWORDS: list[str] = [
+    "폭력", "피", "사고", "충돌", "살인",
+    "자살", "성적", "노출", "장례", "죽음",
+]
+
+# ── 코너 배치 상수 (scoring.py v3.1) ─────────────────────────────────────────
+DEFAULT_AD_W   = 300   # IAB 표준 배너 기본 너비
+DEFAULT_AD_H   = 250   # IAB 표준 배너 기본 높이
+CORNER_PADDING = 20    # 화면 가장자리 패딩
+VIDEO_W        = 1280  # 기준 해상도 너비
+VIDEO_H        = 720   # 기준 해상도 높이
+CORNER_PRIORITY = ["TR", "TL", "BL", "BR"]  # 우상단 기본 → fallback 순서
+
+
+# ── 코너 배치 함수 (scoring.py v3.1) ─────────────────────────────────────────
+
+def _define_corners(
+    ad_w: int = DEFAULT_AD_W,
+    ad_h: int = DEFAULT_AD_H,
+    video_w: int = VIDEO_W,
+    video_h: int = VIDEO_H,
+) -> dict[str, tuple[int, int]]:
+    """4-코너 좌표를 반환한다 (좌상단 기준)."""
+    pad = CORNER_PADDING
+    return {
+        "TR": (video_w - ad_w - pad, pad),
+        "TL": (pad, pad),
+        "BL": (pad, video_h - ad_h - pad),
+        "BR": (video_w - ad_w - pad, video_h - ad_h - pad),
+    }
+
+
+def _corner_overlap_single(
+    cx: int, cy: int, ad_w: int, ad_h: int,
+    sx: int, sy: int, sw: int, sh: int,
+) -> int:
+    """코너 직사각형과 단일 프레임 safe_area의 겹침 면적(px)."""
+    ox = max(0, min(cx + ad_w, sx + sw) - max(cx, sx))
+    oy = max(0, min(cy + ad_h, sy + sh) - max(cy, sy))
+    return ox * oy
+
+
+def _pick_corner_from_frames(
+    frames: list[dict],
+    ad_w: int = DEFAULT_AD_W,
+    ad_h: int = DEFAULT_AD_H,
+) -> tuple[str, int, int, float] | None:
+    """
+    프레임별 safe_area를 각 코너와 개별 비교하여 최적 코너를 선택한다.
+    4코너 동등 비교 — 평균 겹침 면적이 가장 큰 코너에 배치.
+    모든 코너 평균 겹침 = 0 → None (이 윈도우 배치 불가)
+
+    Returns:
+        (corner_name, x, y, avg_overlap) 또는 None
+    """
+    if not frames:
+        return None
+
+    corners = _define_corners(ad_w, ad_h)
+    valid_frames = [
+        f for f in frames
+        if f.get("safe_area_w") and f.get("safe_area_h")
+        and f["safe_area_w"] > 0 and f["safe_area_h"] > 0
+    ]
+    if not valid_frames:
+        return None
+
+    corner_avg: dict[str, float] = {}
+    for name in CORNER_PRIORITY:
+        cx, cy = corners[name]
+        total = sum(
+            _corner_overlap_single(
+                cx, cy, ad_w, ad_h,
+                f["safe_area_x"], f["safe_area_y"],
+                f["safe_area_w"], f["safe_area_h"],
+            )
+            for f in valid_frames
+        )
+        corner_avg[name] = total / len(valid_frames)
+
+    best_name: str | None = None
+    best_avg: float = 0.0
+    for name in CORNER_PRIORITY:
+        if corner_avg[name] > best_avg:
+            best_avg = corner_avg[name]
+            best_name = name
+
+    if best_name is None or best_avg == 0:
+        return None
+
+    cx, cy = corners[best_name]
+    return best_name, cx, cy, best_avg
+
+
+# ── DB 헬퍼 ──────────────────────────────────────────────────────────────────
 
 def _update_job_status(job_id: str, status: str, error: str | None = None) -> None:
     _db.execute(
@@ -80,161 +167,79 @@ def _update_job_status(job_id: str, status: str, error: str | None = None) -> No
     )
 
 
-def _get_scene_frames(job_id: str, scene_start: float, scene_end: float) -> list[dict]:
-    """씬 범위 내 모든 vision context 프레임을 반환한다."""
-    return _db.fetchall(
-        """
-        SELECT timestamp_sec,
-               safe_area_x, safe_area_y, safe_area_w, safe_area_h,
-               object_density
-          FROM analysis_vision_context
-         WHERE job_id = %s
-           AND timestamp_sec >= %s
-           AND timestamp_sec <= %s
-         ORDER BY timestamp_sec
-        """,
-        (job_id, scene_start, scene_end),
-    )
-
+# ── 캐시 기반 헬퍼 (GitHub v2.13 캐싱 + scoring.py v3.1 침묵 로직) ──────────
 
 def _get_scene_frames_cached(
     all_frames: list[dict],
     scene_start: float,
     scene_end: float,
 ) -> list[dict]:
-    """
-    v2.13: prefetch된 전체 프레임 리스트에서 씬 범위 내 프레임을 메모리 내 필터링.
-    all_frames는 timestamp_sec 기준으로 정렬되어 있어야 함.
-    """
+    """v2.13: prefetch된 전체 프레임 리스트에서 씬 범위 내 프레임을 이진탐색."""
     timestamps = [float(f["timestamp_sec"]) for f in all_frames]
     lo = bisect.bisect_left(timestamps, scene_start)
     hi = bisect.bisect_right(timestamps, scene_end)
     return all_frames[lo:hi]
 
 
-def _get_silence_overlap_cached(
-    all_silence: list[dict],
+def _check_silence_from_cache(
+    cached_transcripts: list[dict],
+    has_any_transcript: bool,
+    cached_audio: list[dict],
     window_start: float,
     window_end: float,
 ) -> bool:
-    """v2.13: prefetch된 침묵 구간 리스트에서 겹침 여부를 메모리 내 확인."""
-    return any(
-        float(s["silence_start_sec"]) < window_end and float(s["silence_end_sec"]) > window_start
-        for s in all_silence
-    )
-
-
-def _intersect_safe_areas(frames: list[dict]) -> tuple[int, int, int, int]:
     """
-    프레임 목록의 safe area 교집합 직사각형을 반환한다.
-    유효한 safe area가 없으면 (0, 0, 0, 0) 반환.
+    scoring.py v3.1의 transcript+audio 2중 침묵 판단 (DB 호출 0건).
+
+    1차: Whisper transcript 기반 — 윈도우 내 발화 사이 2초 이상 공백이면 침묵
+    2차: transcript 없지만 job 전체에는 있으면 → 침묵
+    3차: analysis_audio(librosa) fallback
     """
-    valid = [
-        f for f in frames
-        if f.get("safe_area_w") and f.get("safe_area_h")
-        and f["safe_area_w"] > 0 and f["safe_area_h"] > 0
+    overlapping = [
+        t for t in cached_transcripts
+        if float(t["end_sec"]) > window_start and float(t["start_sec"]) < window_end
     ]
-    if not valid:
-        return (0, 0, 0, 0)
+    if overlapping:
+        prev = window_start
+        for t in overlapping:
+            gap = float(t["start_sec"]) - prev
+            if gap >= 2.0:
+                return True
+            prev = max(prev, float(t["end_sec"]))
+        if window_end - prev >= 2.0:
+            return True
+        return False
 
-    x1 = max(f["safe_area_x"] for f in valid)
-    y1 = max(f["safe_area_y"] for f in valid)
-    x2 = min(f["safe_area_x"] + f["safe_area_w"] for f in valid)
-    y2 = min(f["safe_area_y"] + f["safe_area_h"] for f in valid)
-    w = max(0, x2 - x1)
-    h = max(0, y2 - y1)
-    return (x1, y1, w, h)
+    if has_any_transcript:
+        return True
 
-
-def _find_best_overlay_window(
-    job_id: str,
-    scene_start: float,
-    scene_end: float,
-    window_duration: float,
-    frames_cache: list[dict] | None = None,
-) -> dict | None:
-    """
-    씬 내에서 1초 단위 슬라이딩 윈도우로 최적 광고 삽입 구간을 탐색한다.
-
-    최적 기준:
-      1순위: safe_area 교집합 픽셀 최대
-      2순위: 평균 object_density 최소
-
-    Returns:
-        {start_sec, avg_density, safe_area_px, safe_x, safe_y, safe_w, safe_h}
-        또는 프레임 데이터 없을 시 None.
-    """
-    # v2.13: prefetch 캐시가 있으면 메모리 내 필터링, 없으면 DB 쿼리
-    if frames_cache is not None:
-        frames = _get_scene_frames_cached(frames_cache, scene_start, scene_end)
-    else:
-        frames = _get_scene_frames(job_id, scene_start, scene_end)
-    if not frames:
-        return None
-
-    best: dict | None = None
-    t = scene_start
-
-    while t + window_duration <= scene_end + 0.5:   # 0.5초 여유 허용
-        window_end = t + window_duration
-        window_frames = [f for f in frames if t <= f["timestamp_sec"] <= window_end]
-
-        if window_frames:
-            avg_density = sum(f["object_density"] or 0.0 for f in window_frames) / len(window_frames)
-            sx, sy, sw, sh = _intersect_safe_areas(window_frames)
-            safe_area_px = sw * sh
-        else:
-            avg_density  = 1.0
-            sx = sy = sw = sh = 0
-            safe_area_px = 0
-
-        is_better = (
-            best is None
-            or safe_area_px > best["safe_area_px"]
-            or (safe_area_px == best["safe_area_px"] and avg_density < best["avg_density"])
-        )
-        if is_better:
-            best = {
-                "start_sec":    t,
-                "avg_density":  avg_density,
-                "safe_area_px": safe_area_px,
-                "safe_x": sx, "safe_y": sy, "safe_w": sw, "safe_h": sh,
-            }
-
-        t += 1.0
-
-    return best
+    for a in cached_audio:
+        if float(a["silence_start_sec"]) < window_end and float(a["silence_end_sec"]) > window_start:
+            return True
+    return False
 
 
-def _get_silence_overlap(job_id: str, window_start: float, window_end: float) -> bool:
-    """최적 윈도우 구간과 겹치는 침묵 구간이 존재하면 True 반환."""
-    row = _db.fetchone(
-        """
-        SELECT 1
-          FROM analysis_audio
-         WHERE job_id = %s
-           AND silence_start_sec < %s
-           AND silence_end_sec   > %s
-         LIMIT 1
-        """,
-        (job_id, window_end, window_start),
-    )
-    return row is not None
+# ── 통합 스코어링 (scoring.py v3.1 기반, GitHub DB 캐시 적용) ────────────────
 
-
-def _compute_score(
+def _score_candidate(
     candidate: dict,
     job_id: str,
     precomputed_similarity: float | None = None,
     frames_cache: list[dict] | None = None,
+    transcript_cache: list[dict] | None = None,
+    has_any_transcript: bool = False,
     silence_cache: list[dict] | None = None,
-) -> tuple[int, dict | None]:
+) -> tuple[int, dict | None, float]:
     """
-    v2.6 Scene-driven 스코어링.
+    v3.1 통합 스코어링 + GitHub DB 캐시.
+
+    매 윈도우 위치(1초 단위)에서 전체 점수를 합산하여,
+    총점이 가장 높은 윈도우를 선택한다.
+    선택된 윈도우의 safe_area에서 4-코너 동등비교로 좌표를 결정한다.
 
     Returns:
-        (score, window) — window에 overlay 타임스탬프와 safe area 포함.
-        1차·2차 필터 미달 시 (0, None) 반환.
+        (score, window, similarity) — window에 overlay 타임스탬프 + 코너 좌표 포함.
+        필터 미달 시 (0, None, similarity) 반환.
     """
     context_narrative = (candidate.get("context_narrative") or "").strip()
     target_narrative  = (candidate.get("target_narrative") or "").strip()
@@ -244,78 +249,162 @@ def _compute_score(
     ad_dur            = candidate.get("ad_duration_sec")
     ad_type           = candidate.get("ad_type", "banner")
 
-    # ── 사전 필터 ─────────────────────────────────────────────────────────────
+    # ── 0차 필터: Brand Safety (scoring.py v3.1) ────────────────────────────
+    if context_narrative:
+        for kw in UNSAFE_KEYWORDS:
+            if kw in context_narrative:
+                logger.info(
+                    "[SAFETY][SKIP] scene=%.1f~%.1f keyword=%s",
+                    scene_start, scene_end, kw,
+                )
+                return 0, None, 0.0
+
+    # ── 1차 필터: pre_filter (GitHub 모듈) ──────────────────────────────────
     passed, similarity = pre_filter.passes(candidate, precomputed_similarity)
     if not passed:
         return 0, None, similarity
 
+    # ── 2차 필터: 물리적 수용 가능성 (scoring.py v3.1) ──────────────────────
     if ad_type == "video_clip" and ad_dur is not None:
+        if scene_duration < ad_dur:
+            return 0, None, similarity
         window_duration = ad_dur
     else:
-        # 배너: 씬 내 기본 표시 시간만큼 윈도우 탐색
         window_duration = min(
             ad_dur if ad_dur is not None else config.AD_BANNER_DURATION_SEC,
             scene_duration,
         )
 
-    # ── 3차: 슬라이딩 윈도우로 최적 타임스탬프 확정 ──────────────────────────
-    window = _find_best_overlay_window(
-        job_id, scene_start, scene_end, window_duration, frames_cache=frames_cache
-    )
-    if window is None:
-        # vision 데이터 없음 → scene_start를 기본값으로 사용
-        window = {
-            "start_sec":    scene_start,
-            "avg_density":  0.5,
-            "safe_area_px": 0,
-            "safe_x": None, "safe_y": None, "safe_w": None, "safe_h": None,
-        }
-
-    # ── 점수 산출 ─────────────────────────────────────────────────────────────
-    score = 0
-
-    # semantic 점수 (0~+80): Cross-Encoder score (0.40~1.0) → Base Score (0~+80)
-    # 라인 451-454에서 precomputed_similarity로 전달받은 Cross-Encoder score 사용
+    # ── 루프 밖 고정 점수 사전 계산 ─────────────────────────────────────────
+    # semantic 점수 (0~+80) — 윈도우 위치와 무관
+    base_semantic = 0
     if similarity >= SCORE_SEMANTIC_MIN_SIM:
         scaled = (similarity - SCORE_SEMANTIC_MIN_SIM) / (1.0 - SCORE_SEMANTIC_MIN_SIM)
-        score += int(scaled * SCORE_SEMANTIC_MAX)
+        base_semantic = int(scaled * SCORE_SEMANTIC_MAX)
 
-    avg_density = window["avg_density"]
-
-    # +20: 최적 윈도우 내 밀도 낮음
-    if avg_density <= 0.3:
-        score += SCORE_LOW_DENSITY
-
-    # -40: 최적 윈도우 내 밀도 높음
-    if avg_density >= 0.7:
-        score += PENALTY_HIGH_DENSITY
-
-    # +15: 최적 윈도우 내 침묵 구간 겹침 (가점만 — 필수 조건 아님)
-    w_start = window["start_sec"]
-    w_end   = w_start + window_duration
-    # v2.13: silence_cache가 있으면 메모리 내 확인, 없으면 DB 쿼리
-    has_silence = (
-        _get_silence_overlap_cached(silence_cache, w_start, w_end)
-        if silence_cache is not None
-        else _get_silence_overlap(job_id, w_start, w_end)
-    )
-    if has_silence:
-        score += SCORE_SILENCE_BONUS
-
-    # +10: 카테고리 매칭 보너스 (ad_category NULL이면 graceful skip)
+    # category 보너스 — 윈도우 위치와 무관
+    category_bonus = 0
     ad_category = (candidate.get("ad_category") or "").strip()
     if ad_category and context_narrative and embedding_scorer.is_available():
         cat_sim = embedding_scorer.compute_similarity(context_narrative, ad_category)
         if cat_sim >= CATEGORY_SIM_THRESHOLD:
-            score += SCORE_CATEGORY_BONUS
-            logger.debug(
-                "category_fit: sim=%.3f → +%d  ad=%s  category=%s",
-                cat_sim, SCORE_CATEGORY_BONUS, candidate.get("ad_id"), ad_category,
-            )
+            category_bonus = SCORE_CATEGORY_BONUS
 
-    # similarity 반환 추가 — 레이블 데이터 수집용 피처로 decision_result에 저장
-    return score, window, similarity
+    # ── 프레임 데이터 (GitHub 캐시 활용) ────────────────────────────────────
+    if frames_cache is not None:
+        frames = _get_scene_frames_cached(frames_cache, scene_start, scene_end)
+    else:
+        frames = _db.fetchall(
+            """SELECT timestamp_sec, safe_area_x, safe_area_y, safe_area_w, safe_area_h,
+                      object_density
+                 FROM analysis_vision_context
+                WHERE job_id = %s AND timestamp_sec >= %s AND timestamp_sec <= %s
+                ORDER BY timestamp_sec""",
+            (job_id, scene_start, scene_end),
+        )
+    if not frames:
+        return 0, None, similarity
 
+    # ── 침묵 데이터 (캐시에서 씬 범위 필터) ────────────────────────────────
+    scene_transcripts = [
+        t for t in (transcript_cache or [])
+        if float(t["end_sec"]) > scene_start and float(t["start_sec"]) < scene_end
+    ]
+    scene_audio = [
+        a for a in (silence_cache or [])
+        if float(a["silence_start_sec"]) < scene_end and float(a["silence_end_sec"]) > scene_start
+    ]
+
+    ad_w = candidate.get("width") or DEFAULT_AD_W
+    ad_h = candidate.get("height") or DEFAULT_AD_H
+
+    # ── 슬라이딩 윈도우 + 스코어링 + 코너 배치 통합 루프 (scoring.py v3.1) ──
+    best_window: dict | None = None
+    best_score: int = -999
+    t = scene_start
+
+    while t + window_duration <= scene_end + 0.5:
+        window_end = t + window_duration
+        window_frames = [f for f in frames if t <= f["timestamp_sec"] <= window_end]
+
+        if not window_frames:
+            t += 1.0
+            continue
+
+        avg_density = sum(f["object_density"] or 0.0 for f in window_frames) / len(window_frames)
+
+        # ── 코너 배치 판단 (scoring.py v3.1) ──
+        corner_result = _pick_corner_from_frames(window_frames, ad_w, ad_h)
+        if corner_result is None:
+            t += 1.0
+            continue
+
+        corner_name, corner_x, corner_y, corner_overlap = corner_result
+
+        # ── 이 윈도우의 총점 계산 ──
+        total = base_semantic + category_bonus
+
+        # density 연속 점수 (-40 ~ +25)  (scoring.py v3.1)
+        density_score = int(25 - 65 * avg_density)
+        density_score = max(-40, min(25, density_score))
+        total += density_score
+
+        # density trend (기울기)  (scoring.py v3.1)
+        if len(window_frames) >= 2:
+            ts = [f["timestamp_sec"] for f in window_frames]
+            ds = [f["object_density"] or 0.0 for f in window_frames]
+            slope = float(numpy.polyfit(ts, ds, 1)[0])
+        else:
+            slope = 0.0
+
+        if slope < -0.02 and avg_density <= 0.5:
+            total += 3
+        elif slope > 0.02:
+            total -= 5
+
+        # 침묵 보너스 (scoring.py v3.1: 8점, transcript+audio 2중)
+        has_silence = _check_silence_from_cache(
+            scene_transcripts, has_any_transcript, scene_audio, t, window_end,
+        )
+        if has_silence:
+            total += SCORE_SILENCE_BONUS
+
+        # 최고점 갱신
+        if total > best_score:
+            best_score = total
+            best_window = {
+                "start_sec":       t,
+                "avg_density":     avg_density,
+                "safe_area_px":    int(corner_overlap),
+                "corner_name":     corner_name,
+                "corner_x":        corner_x,
+                "corner_y":        corner_y,
+                "corner_overlap":  corner_overlap,
+                "silence_overlap": has_silence,
+                "trend_slope":     slope,
+            }
+
+        t += 1.0
+
+    # 유효한 윈도우가 없으면 (모든 윈도우의 모든 코너 겹침 = 0)
+    if best_window is None:
+        logger.info(
+            "[CORNER][SKIP] 모든 윈도우 코너 겹침=0  ad=%s  scene=%.1f~%.1f",
+            candidate.get("ad_id"), scene_start, scene_end,
+        )
+        return 0, None, similarity
+
+    logger.info(
+        "[v3.1] ad=%s  scene=%.1f~%.1f  t=%.1f  score=%d  corner=%s  overlap=%.0f  den=%.2f  sim=%.3f",
+        candidate.get("ad_id"), scene_start, scene_end,
+        best_window["start_sec"], best_score, best_window["corner_name"],
+        best_window["corner_overlap"], best_window["avg_density"], similarity,
+    )
+
+    return best_score, best_window, similarity
+
+
+# ── Dedup (GitHub v2.14: 시간 겹침만 제거) ──────────────────────────────────
 
 def _pick_best_and_deduplicate(scored: list[dict]) -> list[dict]:
     """
@@ -352,6 +441,8 @@ def _pick_best_and_deduplicate(scored: list[dict]) -> list[dict]:
 
     return result
 
+
+# ── DB INSERT ────────────────────────────────────────────────────────────────
 
 def _insert_decision_results(job_id: str, results: list[dict]) -> None:
     with _db.cursor() as cur:
@@ -390,15 +481,15 @@ def _insert_decision_results(job_id: str, results: list[dict]) -> None:
     logger.info("Inserted %d decision result(s) for job %s", len(results), job_id)
 
 
+# ── 메인 파이프라인 ──────────────────────────────────────────────────────────
+
 def run(job_id: str, candidates: list[dict]) -> None:
     _update_job_status(job_id, "deciding")
     try:
-        # ── 배치 행렬 연산으로 narrative 유사도 사전 계산 (v2.8) ──────────────
-        # target_narrative가 있는 후보에 한해 N×M을 단일 행렬 곱으로 처리.
-        # legacy(ad_name+mood) 후보는 _compute_score 내에서 개별 처리됨.
         sim_lookup: dict[tuple[str, str], float] = {}
 
-        # ── 1단계: MiniLM pre-filter (씬길이/코사인유사도로 후보 대폭 감소) ──────
+        # ── 1단계: MiniLM pre-filter (GitHub v2.14) ─────────────────────────
+        # Cross-Encoder 전에 MiniLM 코사인유사도로 대량 후보를 빠르게 제거
         if candidates and embedding_scorer.is_available():
             unique_ctx = list(dict.fromkeys(
                 c.get("context_narrative") or "" for c in candidates
@@ -434,7 +525,7 @@ def run(job_id: str, candidates: list[dict]) -> None:
                 job_id, before, len(candidates),
             )
 
-        # ── 2단계: Cross-Encoder 배치 스코어링 → 상위 30개 선택 ─────────────────
+        # ── 2단계: Cross-Encoder 배치 → Top-30 (GitHub v2.14) ──────────────
         TOP_K_CANDIDATES = 30
         if candidates:
             pairs = [
@@ -444,7 +535,9 @@ def run(job_id: str, candidates: list[dict]) -> None:
             ]
             if pairs:
                 unique_pairs = list(dict.fromkeys(pairs))
+
                 if cross_encoder_scorer.is_available():
+                    # Cross-Encoder 배치 추론 (정밀 평가)
                     scores = cross_encoder_scorer.batch_score(unique_pairs)
                     sim_lookup = dict(zip(unique_pairs, scores))
                     logger.info(
@@ -465,7 +558,7 @@ def run(job_id: str, candidates: list[dict]) -> None:
                         job_id, len(candidates), len(scored_list),
                     )
                 elif not sim_lookup:
-                    # CE 없고 MiniLM도 없는 경우 fallback
+                    # CE 없으면 MiniLM fallback
                     unique_ctx = list(dict.fromkeys(p[0] for p in unique_pairs))
                     unique_tgt = list(dict.fromkeys(p[1] for p in unique_pairs))
                     sim_matrix = embedding_scorer.batch_similarity_matrix(unique_ctx, unique_tgt)
@@ -478,43 +571,50 @@ def run(job_id: str, candidates: list[dict]) -> None:
                         job_id, len(sim_lookup),
                     )
 
-        # ── v2.13: vision frames + silence intervals 사전 일괄 조회 ─────────
-        # 루프 내 씬별 DB 쿼리(O(N))를 루프 전 1회 전체 조회(O(1))로 개선.
+        # ── DB prefetch (GitHub v2.13) ──────────────────────────────────────
+        # 루프 내 씬별 DB 쿼리(O(N))를 루프 전 1회 전체 조회(O(1))로 개선
         frames_cache = _db.fetchall(
-            """
-            SELECT timestamp_sec,
-                   safe_area_x, safe_area_y, safe_area_w, safe_area_h,
-                   object_density
-              FROM analysis_vision_context
-             WHERE job_id = %s
-             ORDER BY timestamp_sec
-            """,
+            """SELECT timestamp_sec,
+                      safe_area_x, safe_area_y, safe_area_w, safe_area_h,
+                      object_density
+                 FROM analysis_vision_context
+                WHERE job_id = %s
+                ORDER BY timestamp_sec""",
             (job_id,),
         )
         silence_cache = _db.fetchall(
             "SELECT silence_start_sec, silence_end_sec FROM analysis_audio WHERE job_id = %s",
             (job_id,),
         )
+        # scoring.py v3.1: transcript 캐시 추가 (2중 침묵 판단용)
+        transcript_cache = _db.fetchall(
+            "SELECT start_sec, end_sec FROM analysis_transcript WHERE job_id = %s ORDER BY start_sec",
+            (job_id,),
+        )
+        has_any_transcript = len(transcript_cache) > 0
         logger.info(
-            "[%s] Prefetched %d vision frames, %d silence intervals.",
-            job_id, len(frames_cache), len(silence_cache),
+            "[%s] Prefetched %d vision frames, %d silence intervals, %d transcripts.",
+            job_id, len(frames_cache), len(silence_cache), len(transcript_cache),
         )
 
+        # ── 스코어링 루프 (scoring.py v3.1 통합 방식) ───────────────────────
         scored_candidates = []
 
         for c in candidates:
             ctx = c.get("context_narrative") or ""
             tgt = c.get("target_narrative") or ""
             precomputed = sim_lookup.get((ctx, tgt))
-            score, window, similarity = _compute_score(
+            score, window, similarity = _score_candidate(
                 c, job_id,
                 precomputed_similarity=precomputed,
                 frames_cache=frames_cache,
+                transcript_cache=transcript_cache,
+                has_any_transcript=has_any_transcript,
                 silence_cache=silence_cache,
             )
 
             if score <= 0 or window is None:
-                continue  # 필터 미달 또는 점수 없음
+                continue
 
             ad_dur  = c.get("ad_duration_sec") or config.AD_BANNER_DURATION_SEC
             ad_type = c.get("ad_type", "banner")
@@ -527,17 +627,19 @@ def run(job_id: str, candidates: list[dict]) -> None:
             scored_candidates.append({
                 **c,
                 "score":                  score,
-                "similarity_score":       float(similarity),          # 레이블 피처
-                "scene_duration_sec":     float(c["scene_duration"]), # 레이블 피처
-                "avg_density":            float(window["avg_density"]),# 레이블 피처
+                "similarity_score":       float(similarity),
+                "scene_duration_sec":     float(c["scene_duration"]),
+                "avg_density":            float(window["avg_density"]),
                 "overlay_start_time_sec": float(window["start_sec"]),
                 "overlay_duration_sec":   float(overlay_dur),
-                "coordinates_x":          window.get("safe_x"),
-                "coordinates_y":          window.get("safe_y"),
-                "coordinates_w":          window.get("safe_w"),
-                "coordinates_h":          window.get("safe_h"),
+                "coordinates_x":          window.get("corner_x", CORNER_PADDING),
+                "coordinates_y":          window.get("corner_y", CORNER_PADDING),
+                "coordinates_w":          c.get("width") or DEFAULT_AD_W,
+                "coordinates_h":          c.get("height") or DEFAULT_AD_H,
+                "corner_name":            window.get("corner_name", "TR"),
             })
 
+        # ── Dedup + INSERT (GitHub v2.14: 시간 겹침만 제거) ─────────────────
         best = _pick_best_and_deduplicate(scored_candidates)
         _insert_decision_results(job_id, best)
         _update_job_status(job_id, "complete")
