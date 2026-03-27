@@ -1,148 +1,133 @@
 import os
-import glob
+import argparse
 import subprocess
-import cv2
 import imageio_ffmpeg
+import numpy as np
 import csv
 
 try:
     from faster_whisper import WhisperModel
+    from sentence_transformers import SentenceTransformer
+    from sklearn.metrics.pairwise import cosine_similarity
 except ImportError:
-    print("faster_whisper가 설치되지 않았습니다. 모델을 불러올 수 없습니다.")
-    print("명령어 예시: pip install faster-whisper")
+    print("관련 환경 모듈이 모두 설치되지 않았습니다. (.myvenv 파이썬 환경을 사용하세요)")
+    exit(1)
 
-def get_video_duration(filename):
-    """cv2를 이용해 비디오 길이를 가져옵니다."""
-    cap = cv2.VideoCapture(filename)
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-    cap.release()
-    if fps > 0:
-        return frames / fps
-    return 0.0
-
-def main():
-    video_path = r"data\videos\언더커버 미쓰홍.E16.260308.720p-NEXT.mp4"
-    reference_txt = r"data\references\undercover_miss_hong.txt"
-    scene_clips_folder = r"scene_clips_result"
-    output_merged_folder = r"outputs\dialogue_aligned_clips"
-    
-    os.makedirs(output_merged_folder, exist_ok=True)
-
-    print("=== 1. Faster-Whisper로 대사 추출 및 정답지 생성 ===")
-    
-    try:
-        # GPU 사용 권장 (만약 CUDA 에러가 난다면 device="cpu", compute_type="int8"로 변경하세요)
-        model = WhisperModel("large-v3", device="cuda", compute_type="float16")
-        print("Whisper 모델 로드 완료. 대사 추출을 시작합니다... (영상이 길어 시간이 다소 소요될 수 있습니다)")
-        
-        segments, info = model.transcribe(video_path, beam_size=5, language="ko")
-        
-        dialogues = []
-        full_text = []
-
-        for segment in segments:
-            print(f"[{segment.start:.2f}s -> {segment.end:.2f}s] {segment.text}")
-            dialogues.append({
-                "start": segment.start,
-                "end": segment.end,
-                "text": segment.text.strip()
-            })
-            full_text.append(segment.text.strip())
-
-        # 정답지(undercover_miss_hong.txt)에 내용 덮어쓰기
-        with open(reference_txt, "w", encoding="utf-8") as f:
-            f.write(" ".join(full_text))
-        print(f"정답지 업데이트 완료: {reference_txt}")
-
-    except Exception as e:
-        print(f"Whisper 대사 추출 중 예외가 발생하여 건너뜁니다: {e}")
-        return
-
-    print("\n=== 2. 원본 Scene 클립들의 타임라인 분석 ===")
-    scene_files = sorted(glob.glob(os.path.join(scene_clips_folder, "*.mp4")))
-    if not scene_files:
-        print(f"{scene_clips_folder} 폴더에 mp4 파일이 없습니다.")
-        return
-        
-    scene_timelines = []
-    current_time = 0.0
-    for sf in scene_files:
-        try:
-            dur = get_video_duration(sf)
-            scene_timelines.append({
-                "file": sf,
-                "start": current_time,
-                "end": current_time + dur
-            })
-            current_time += dur
-        except Exception as e:
-            print(f"[{sf}] 길이 측정 실패: {e}")
-
-    print("\n=== 3. 대사(문맥) 기준 타임테이블에 맞춰 Scene 병합 및 CSV 생성 ===")
+def chunk_video_by_context(video_path: str, output_dir: str):
+    os.makedirs(output_dir, exist_ok=True)
+    basename = os.path.splitext(os.path.basename(video_path))[0]
     
     ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
-    csv_data = [["Filename", "Start Time(s)", "End Time(s)", "Context Text", "Merged Original Scenes"]]
+    temp_wav = os.path.join(output_dir, f"{basename}_temp.wav")
+
+    print(f"\n[1/4] 비디오에서 오디오 안전 분리 중... ({video_path})")
+    # 분할 시 Whisper가 다운되지 않도록 16kHz WAV 포맷으로 백그라운드 추출
+    if not os.path.exists(temp_wav):
+        subprocess.run([
+            ffmpeg_exe, "-y", "-i", video_path, 
+            "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", temp_wav
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    print("\n[2/4] Faster-Whisper로 대사 스크립트 작성 중...")
+    model = WhisperModel("large-v3", device="cpu", compute_type="int8")
+    segments, info = model.transcribe(temp_wav, beam_size=5, language="ko", vad_filter=True)
     
-    # dialogues에 있는 대사 타임아웃에 겹치는 scene들을 찾아서 병합
-    for idx, d in enumerate(dialogues):
-        d_start = d["start"]
-        d_end = d["end"]
-        d_text = d["text"]
+    raw_segments = []
+    for segment in segments:
+        print(f"[{segment.start:.2f}s -> {segment.end:.2f}s] {segment.text}")
+        raw_segments.append({
+            "start": segment.start,
+            "end": segment.end,
+            "text": segment.text.strip()
+        })
         
-        # 문맥 길이에 겹치는 scene들 필터링
-        intersect_scenes = []
-        for st in scene_timelines:
-            # 시간 겹침 조건: 씬의 끝이 대사 시작보다 크고, 씬의 시작이 대사 끝보다 작을 때
-            if st["end"] > d_start and st["start"] < d_end:
-                intersect_scenes.append(st["file"])
-                
-        if not intersect_scenes:
+    if not raw_segments:
+        print("대사가 감지되지 않았습니다. 종료합니다.")
+        return
+
+    print(f"\n[3/4] SBERT(Ko-sRoBERTa) 대사 의미(Context) 군집화 중... (총 {len(raw_segments)} 문장)")
+    bert_model = SentenceTransformer('jhgan/ko-sroberta-multitask')
+    
+    contexts = []
+    current_context = [raw_segments[0]]
+    
+    for i in range(1, len(raw_segments)):
+        prev = raw_segments[i-1]
+        curr = raw_segments[i]
+        
+        # 문장 간 침묵 시간이 4.0초 이상 벌어지면 완전히 새로운 씬/상황으로 판단 후 분리
+        if curr["start"] - prev["end"] > 4.0:
+            contexts.append(current_context)
+            current_context = [curr]
             continue
             
-        print(f"대사 {idx+1}: [{d_start:.1f}~{d_end:.1f}] '{d_text}' -> 파일 {len(intersect_scenes)}개 병합")
+        emb1 = bert_model.encode([prev["text"]])
+        emb2 = bert_model.encode([curr["text"]])
+        sim = cosine_similarity(emb1, emb2)[0][0]
         
-        # ffmpeg concat을 위한 텍스트 리스트 파일 생성
-        list_file_path = os.path.join(output_merged_folder, f"list_{idx}.txt")
-        with open(list_file_path, "w", encoding="utf-8") as lf:
-            for sfp in intersect_scenes:
-                # Windows 환경 고려 절대경로 처리
-                abs_path = os.path.abspath(sfp).replace("\\", "/")
-                lf.write(f"file '{abs_path}'\n")
-                
-        out_filename_only = f"dialogue_{idx+1:04d}.mp4"
-        out_filepath = os.path.join(output_merged_folder, out_filename_only)
+        # 두 문장이 맥락상 연관성이 30% 미만이면 완전히 대화 주제가 바뀐 것으로 간주!
+        if sim < 0.3:
+            contexts.append(current_context)
+            current_context = [curr]
+        else:
+            current_context.append(curr)
+            
+    contexts.append(current_context)
+
+    print(f"\n[4/4] 총 {len(contexts)}개의 문맥 덩어리로 원본 영상 분할(Split) 및 CSV 기록 중...")
+    csv_data = [["Filename", "Start Time(s)", "End Time(s)", "Context Text"]]
+    
+    for idx, ctx in enumerate(contexts):
+        c_start = ctx[0]["start"]
+        c_end = ctx[-1]["end"]
         
-        # CSV 메타데이터 추가
+        # 말이 너무 딱딱하게 잘리는 것을 막기 위해 오디오 패딩 부여 (시작 -0.3초, 끝 +0.5초)
+        pad_start = max(0, c_start - 0.3)
+        pad_end = c_end + 0.5
+        c_text = " ".join([seg["text"] for seg in ctx])
+        
+        out_filename = f"{basename}_context_{idx+1:04d}.mp4"
+        out_filepath = os.path.join(output_dir, out_filename)
+        
         csv_data.append([
-            out_filename_only,
-            f"{d_start:.2f}",
-            f"{d_end:.2f}",
-            d_text,
-            "|".join([os.path.basename(s) for s in intersect_scenes])
+            out_filename,
+            f"{c_start:.2f}",
+            f"{c_end:.2f}",
+            c_text
         ])
         
-        # ffmpeg로 재인코딩 없이(copy) 병합
+        # Scenedetect로 자른 파일 합치지 않고!
+        # 원본 영상에서 직접 시간(Time-stamp)값으로 매우 정밀하게 도려내서 독립된 mp4로 추출 (재인코딩 없이 고속 copy)
         cmd = [
-            ffmpeg_exe, "-y", "-f", "concat", "-safe", "0", 
-            "-i", list_file_path, 
-            "-c", "copy", out_filepath
+            ffmpeg_exe, "-y", 
+            "-ss", str(pad_start), 
+            "-to", str(pad_end),
+            "-i", video_path, 
+            "-c", "copy", "-avoid_negative_ts", "make_zero", out_filepath
         ]
-        
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        
-        # 리스트 파일 정리
-        if os.path.exists(list_file_path):
-            os.remove(list_file_path)
+        print(f" -> {out_filename} 분할 생성 완료 (실제 대사: {c_start:.2f}s ~ {c_end:.2f}s)")
 
-    # 협업용 CSV 저장
-    csv_path = os.path.join(output_merged_folder, "dialogue_metadata.csv")
+    # 추출된 메타데이터 CSV를 따로 보존
+    csv_path = os.path.join(output_dir, f"{basename}_metadata.csv")
     with open(csv_path, "w", encoding="utf-8-sig", newline="") as cf:
-        writer = csv.writer(cf)
-        writer.writerows(csv_data)
+        csv.writer(cf).writerows(csv_data)
 
-    print(f"\n[OK] 메타데이터 CSV 생성 완료: {csv_path}")
-    print("모든 작업이 완료되었습니다! 결과 폴더:", output_merged_folder)
+    print(f"\n[모든 파이프라인 구동 완료] 결과 데이터가 {output_dir} 경로에 안전하게 저장되었습니다!")
 
 if __name__ == "__main__":
-    main()
+    # 명령어 실행 시 직접 옵션을 줄 수 있도록 범용적인 argparse 옵션 제공
+    parser = argparse.ArgumentParser(description="대사 추출 및 문맥 단위 독립적 영상 절단 파이프라인")
+    parser.add_argument("--video", "-v", default=r"data\videos\2_short.mp4", help="분석할 원본 비디오 경로")
+    parser.add_argument("--output", "-o", default=r"outputs\2_short_analysis", help="분할 영상과 CSV를 저장할 개별 출력 폴더")
+    args = parser.parse_args()
+    
+    # 윈도우 환경에 맞게 경로 재변환
+    video_path = os.path.normpath(args.video)
+    output_dir = os.path.normpath(args.output)
+    
+    if not os.path.exists(video_path):
+         print(f"오류: 입력하신 영상 파일 '{video_path}'을 찾을 수 없습니다. (경로를 확인하세요!)")
+         exit(1)
+         
+    chunk_video_by_context(video_path, output_dir)
