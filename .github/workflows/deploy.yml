@@ -35,11 +35,14 @@ jobs:
             set -e
             cd /app/Docker/pipeline
 
+            echo "=== Docker Down ==="
+            docker-compose -f docker-compose.pipeline.yml down --remove-orphans || true
+
             echo "=== Docker Build ==="
             docker-compose -f docker-compose.pipeline.yml build
 
-            echo "=== Docker Restart ==="
-            docker-compose -f docker-compose.pipeline.yml up -d --force-recreate --remove-orphans
+            echo "=== Docker Up ==="
+            docker-compose -f docker-compose.pipeline.yml up -d
 
             echo "=== Status ==="
             sleep 5
