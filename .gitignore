@@ -76,6 +76,9 @@ models/
 # ─── Runtime Files ────────────────────────────────────────────────────────────
 .pids.json
 
+# ─── Claude Code Internal Files ───────────────────────────────────────────────
+.claude/
+
 # ─── Private Pipeline Documentation (contains server IPs / credentials) ──────
 PIPELINE_v2.md
 
