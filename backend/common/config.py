@@ -88,6 +88,8 @@ RCNN_BATCH_SIZE           = int(os.getenv("RCNN_BATCH_SIZE",           "200"))
 YOLO_MODEL                = os.getenv("YOLO_MODEL",                "yolov8l.pt")
 YOLO_CONFIDENCE_THRESHOLD = float(os.getenv("YOLO_CONFIDENCE_THRESHOLD", "0.35"))
 YOLO_BATCH_SIZE           = int(os.getenv("YOLO_BATCH_SIZE",           "200"))
+# imgsz: inference image size (px) — 640(default) → 800 for better small-object detection
+YOLO_IMGSZ                = int(os.getenv("YOLO_IMGSZ",               "800"))
 # Whisper STT model size: tiny | base | small | medium | large
 # 'small' (244M) 이상 권장 — base(74M)는 한국어 인식률이 낮아 대사가 깨짐
 # v2.5+: task=transcribe + language=ko 사용 (번역 없이 한국어 원문 유지)
