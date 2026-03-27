@@ -1,10 +1,10 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Dockerfile.step2b
-# step2-b 전용 컨테이너 — 오디오 분석 (침묵 감지 + Whisper STT)
+# step2-b 전용 컨테이너 — 비전 후속 분석
 #
-# v2.13: Step2 분리
-#   - librosa  : 오디오 침묵 구간 감지
-#   - Whisper  : 한국어 음성 전사 (STT)
+# v2.15: 씬 기반 비전 분석
+#   - YOLOv8l    : 씬별 선택 프레임 객체 감지
+#   - Gemini API : 대사 + 프레임 + 객체 → 상황/감정/욕구
 #
 # Run:
 #   docker-compose -f docker-compose.pipeline.yml up step2-b
@@ -13,16 +13,17 @@
 FROM python:3.11-slim
 
 # ── 시스템 패키지 ─────────────────────────────────────────────────────────────
-# ffmpeg : 오디오 디코딩 (Whisper / librosa 의존)
+# libgl1 / libglib2.0-0: OpenCV 의존
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        ffmpeg \
         libpq-dev \
+        libgl1 \
+        libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# ── CPU-only PyTorch (Whisper 의존) ──────────────────────────────────────────
+# ── CPU-only PyTorch (YOLO / transformers 의존) ───────────────────────────────
 RUN pip install --no-cache-dir \
     torch==2.5.1 \
     torchvision==0.20.1 \
