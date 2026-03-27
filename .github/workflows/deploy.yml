@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
 
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -35,7 +39,7 @@ jobs:
             docker-compose -f docker-compose.pipeline.yml build
 
             echo "=== Docker Restart ==="
-            docker-compose -f docker-compose.pipeline.yml up -d --force-recreate
+            docker-compose -f docker-compose.pipeline.yml up -d --force-recreate --remove-orphans
 
             echo "=== Status ==="
             sleep 5
