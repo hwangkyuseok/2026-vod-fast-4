@@ -81,6 +81,7 @@ PIPELINE_v2.md
 
 # ─── Build / Package Artifacts ────────────────────────────────────────────────
 *.zip
+*.bak
 
 # ─── ML Model Weights (large binary files) ────────────────────────────────────
 *.pt
