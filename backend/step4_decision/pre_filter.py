@@ -8,12 +8,11 @@ Cross-Encoder 전에 빠르게 후보를 제거.
 """
 
 import logging
-
 from step4_decision import embedding_scorer
 
 logger = logging.getLogger(__name__)
 
-NARRATIVE_THRESHOLD = 0.30  # [TEST] 임시 하향 (0.50→0.30): 크로스링구얼 유사도 분포 확인용
+NARRATIVE_THRESHOLD = 0.40  # MiniLM pre-filter: Cross-Encoder 입력 후보 수 제한
 
 
 def passes(candidate: dict, precomputed_similarity: float | None = None) -> tuple[bool, float]:

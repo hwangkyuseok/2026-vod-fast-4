@@ -70,10 +70,9 @@ def score(context_narrative: str, target_narrative: str) -> float:
         return 0.0
     try:
         raw = model.predict([[context_narrative, target_narrative]])
-        # CrossEncoder 출력은 로짓값일 수 있으므로 sigmoid로 0~1 정규화
+        # ms-marco 계열 모델은 로짓 출력 → sigmoid로 0~1 정규화
         val = float(raw[0])
-        normalized = float(1 / (1 + np.exp(-val))) if abs(val) > 1.0 else max(0.0, min(1.0, val))
-        return normalized
+        return float(1 / (1 + np.exp(-val)))
     except Exception as exc:
         logger.warning("cross_encoder_scorer.score() failed: %s", exc)
         return 0.0
@@ -96,9 +95,7 @@ def batch_score(pairs: list[tuple[str, str]]) -> list[float]:
         raw_scores = model.predict([[c, t] for c, t in pairs])
         result = []
         for val in raw_scores:
-            val = float(val)
-            normalized = float(1 / (1 + np.exp(-val))) if abs(val) > 1.0 else max(0.0, min(1.0, val))
-            result.append(normalized)
+            result.append(float(1 / (1 + np.exp(-float(val)))))
         return result
     except Exception as exc:
         logger.warning("cross_encoder_scorer.batch_score() failed: %s", exc)
