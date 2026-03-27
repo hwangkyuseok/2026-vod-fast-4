@@ -1,5 +1,5 @@
 """
-vision_gemini.py — Scene Description & Context via Gemini Flash (v2.0)
+vision_gemini.py — Scene Description & Context via Gemini Flash (v2.1)
 ──────────────────────────────────────────────────────────────────────
 Qwen2-VL(vision_qwen.py)과 동일한 함수 시그니처를 유지하면서
 Google Gemini Flash API로 대체하는 모듈.
@@ -12,10 +12,12 @@ Rate limit (무료 티어):
 
 환경변수:
   GEMINI_API_KEY: Google AI Studio에서 발급한 API 키
-  GEMINI_MODEL:   사용할 모델 (기본: gemini-2.0-flash)
+  GEMINI_MODEL:   사용할 모델 (기본: gemini-2.5-flash-preview-04-17)
 
-변경사항 (v2.0):
-  - google.generativeai (deprecated) → google.genai (신규 SDK) 교체
+변경사항 (v2.1):
+  - 프롬프트: 상황/감정/욕구 3항목 형식으로 변경
+  - analyse_scene_context(): detected_objects 파라미터 추가
+  - GEMINI_MODEL 기본값 → gemini-2.5-flash-preview-04-17
 """
 
 import base64
@@ -146,18 +148,40 @@ def analyse_frames(frame_paths: list[str]) -> dict[int, str]:
     return descriptions
 
 
+_PROMPT_TEMPLATE = (
+    "아래는 한국 TV 드라마의 한 씬에 대한 정보입니다.\n\n"
+    "씬 구간: {scene_start_sec:.1f}s ~ {scene_end_sec:.1f}s\n\n"
+    "[화면 속 탐지된 객체]\n"
+    "{detected_objects}\n\n"
+    "[대사]\n"
+    "{dialogue_text}\n\n"
+    "위 객체와 대사 정보를 반드시 참고하여, 이 씬을 분석하고 아래 세 항목을 각각 정확히 1문장으로 작성하세요.\n"
+    "반드시 'label: 내용' 형식을 지켜야 합니다.\n\n"
+    "상황: 이 씬에 등장하는 장면, 배경, 인물의 행동을 묘사하세요. (감정·느낌 표현 금지)\n"
+    "감정: 이 씬이 시청자에게 전달하는 감성적 분위기나 정서를 표현하세요. (상황 묘사 금지)\n"
+    "욕구: 이 씬이 타겟하는 시청자의 내면적 니즈나 욕구를 서술하세요. (감정 단어·상황 묘사 금지)\n\n"
+    "예시:\n"
+    "상황: 퇴근 후 집에 돌아온 직장인이 소파에 앉아 따뜻한 음료를 마시는 장면이다.\n"
+    "감정: 하루의 피로가 녹아드는 포근하고 안도감 있는 분위기를 전달한다.\n"
+    "욕구: 바쁜 일상 속에서 잠깐의 휴식과 자신을 위한 작은 여유를 원하는 사람에게 어울린다.\n\n"
+    "반드시 한국어로만 작성하고, 위 예시처럼 세 줄로만 답하세요."
+)
+
+
 def analyse_scene_context(
     frame_paths: list[str],
     transcript_text: str,
     scene_start_sec: float,
     scene_end_sec: float,
+    detected_objects: str = "",
 ) -> str:
     """
-    vision_qwen.analyse_scene_context()와 동일한 시그니처.
-    씬 전체의 멀티모달 컨텍스트를 Gemini Flash로 분석하여 한국어 서술문을 반환한다.
+    vision_qwen.analyse_scene_context()와 동일한 시그니처 (detected_objects 추가).
+    씬 프레임(최대 3장) + YOLO 객체 + Whisper 대사를 Gemini에 전달하여
+    상황/감정/욕구 3항목 형식의 context_narrative를 반환한다.
 
     Returns:
-        광고 매칭용 한국어 서술문. 실패 시 "".
+        "상황: ... 감정: ... 욕구: ..." 형식 한국어 서술문. 실패 시 "".
     """
     transcript_excerpt = (transcript_text or "").strip()[:1200]
     valid_frames = [fp for fp in (frame_paths or []) if Path(fp).exists()]
@@ -169,26 +193,19 @@ def analyse_scene_context(
         )
         return ""
 
-    # 프롬프트 구성
-    ctx_parts: list[str] = []
-    if transcript_excerpt:
-        ctx_parts.append(f"대사: {transcript_excerpt}")
-    context_block = "\n".join(ctx_parts) if ctx_parts else "(대사 없음)"
+    objects_text  = detected_objects.strip() if detected_objects.strip() else "(탐지 없음)"
+    dialogue_text = transcript_excerpt if transcript_excerpt else "(대사 없음)"
 
-    prompt = (
-        "당신은 한국 TV 드라마 장면을 분석하여 광고 매칭에 활용할 컨텍스트를 생성하는 전문가입니다.\n\n"
-        f"{context_block}\n\n"
-        "1~2문장으로 다음을 한국어로 설명하세요:\n"
-        "- 등장인물과 그들이 하는 행동\n"
-        "- 감정적 분위기\n"
-        "- 인물들의 욕구나 필요\n\n"
-        "사실에 근거하여 구체적으로 작성하세요. 광고 카테고리나 브랜드명은 언급하지 마세요.\n\n"
-        "반드시 한국어로만 답하세요. Do not use English."
+    prompt = _PROMPT_TEMPLATE.format(
+        scene_start_sec=scene_start_sec,
+        scene_end_sec=scene_end_sec,
+        detected_objects=objects_text,
+        dialogue_text=dialogue_text,
     )
 
-    # 이미지 파트 빌드 (최대 5장)
+    # 프레임 이미지 (최대 3장) + 프롬프트
     contents: list = []
-    for fp in valid_frames[:5]:
+    for fp in valid_frames[:3]:
         contents.append(_image_part(fp))
     contents.append(prompt)
 

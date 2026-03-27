@@ -114,7 +114,7 @@ WHISPER_MODEL             = os.getenv("WHISPER_MODEL", "small")
 # VLM_BACKEND: "qwen" (로컬 Qwen2-VL) | "gemini" (Google Gemini Flash API)
 VLM_BACKEND  = os.getenv("VLM_BACKEND",  "qwen")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL   = os.getenv("GEMINI_MODEL",   "gemini-2.0-flash")
+GEMINI_MODEL   = os.getenv("GEMINI_MODEL",   "gemini-2.5-flash-preview-04-17")
 
 # ─── API Server ───────────────────────────────────────────────────────────────
 API_HOST     = os.getenv("API_HOST",     "0.0.0.0")
