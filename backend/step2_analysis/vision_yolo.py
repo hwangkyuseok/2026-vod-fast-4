@@ -39,6 +39,7 @@ from common.config import (
     YOLO_BATCH_SIZE,
     YOLO_MODEL,
     YOLO_IMGSZ,
+    YOLO_CLASS_IDS,
 )
 
 logger = logging.getLogger(__name__)
@@ -239,6 +240,7 @@ def analyse_frames(
             device=device_name,
             conf=YOLO_CONFIDENCE_THRESHOLD,
             imgsz=YOLO_IMGSZ,
+            classes=YOLO_CLASS_IDS,
             verbose=False,
         )
         # boxes.xyxy: (N, 4) tensor on CPU; boxes.cls: class IDs (COCO)

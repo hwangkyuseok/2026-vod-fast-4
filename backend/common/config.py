@@ -90,6 +90,10 @@ YOLO_CONFIDENCE_THRESHOLD = float(os.getenv("YOLO_CONFIDENCE_THRESHOLD", "0.35")
 YOLO_BATCH_SIZE           = int(os.getenv("YOLO_BATCH_SIZE",           "200"))
 # imgsz: inference image size (px) — 640(default) → 800 for better small-object detection
 YOLO_IMGSZ                = int(os.getenv("YOLO_IMGSZ",               "800"))
+# MVP 탐지 클래스 ID (COCO 원본 기준) — 사과(53) 제외 14개
+# 기본값: 16,26,39,41,45,56,57,59,60,62,63,65,67,72
+_raw_class_ids            = os.getenv("YOLO_CLASS_IDS", "16,26,39,41,45,56,57,59,60,62,63,65,67,72")
+YOLO_CLASS_IDS            = [int(x) for x in _raw_class_ids.split(",")]
 # Whisper STT model size: tiny | base | small | medium | large
 # 'small' (244M) 이상 권장 — base(74M)는 한국어 인식률이 낮아 대사가 깨짐
 # v2.5+: task=transcribe + language=ko 사용 (번역 없이 한국어 원문 유지)
