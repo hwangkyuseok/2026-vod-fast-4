@@ -1,18 +1,38 @@
-name: Auto Merge on Approval
+name: Auto Approve and Merge
 
 on:
-  pull_request_review:
-    types: [submitted]
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
 
 jobs:
-  auto-merge:
+  auto-approve:
     runs-on: ubuntu-latest
-    if: github.event.review.state == 'approved'
     permissions:
       pull-requests: write
       contents: write
     steps:
-      - name: Auto merge approved PR
+      - name: Auto approve (hwangkyuseok PR → cnrkddl token)
+        if: github.event.pull_request.user.login == 'hwangkyuseok'
+        env:
+          GH_TOKEN: ${{ secrets.PAT_CNRKDDL }}
+        run: |
+          gh pr review ${{ github.event.pull_request.number }} \
+            --repo ${{ github.repository }} \
+            --approve \
+            --body "Auto-approved by cnrkddl token"
+
+      - name: Auto approve (cnrkddl PR → hwangkyuseok token)
+        if: github.event.pull_request.user.login == 'cnrkddl'
+        env:
+          GH_TOKEN: ${{ secrets.PAT_HWANGKYUSEOK }}
+        run: |
+          gh pr review ${{ github.event.pull_request.number }} \
+            --repo ${{ github.repository }} \
+            --approve \
+            --body "Auto-approved by hwangkyuseok token"
+
+      - name: Merge after approval
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
