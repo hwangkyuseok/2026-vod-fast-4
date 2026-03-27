@@ -4,12 +4,12 @@ step4_training/labeling_gemini.py — Cross-Encoder 학습 데이터 라벨링
 DB의 (씬, 광고) 쌍을 Gemini로 평가하여 cross_encoder_labels 테이블에 저장.
 
 라벨 기준:
-  > 0.9   → train        (학습 데이터로 바로 사용)
-  0.4~0.9 → review       (검토 후 사용)
-  < 0.4   → human_check  (사람 확인 필요)
+  >= 0.7        → positive   (Positive 정답 데이터)
+  0.3 < x < 0.7 → ambiguous  (학습 제외, DB에는 저장)
+  <= 0.3        → negative   (Negative 정답 데이터)
 
 실행:
-    python -m step4_training.labeling_gemini [--limit N] [--dry-run] [--force]
+    python -m step4_training.labeling_gemini [--ads-per-scene N] [--limit N] [--dry-run] [--force]
 
 환경변수:
     GEMINI_API_KEY : Google AI Studio API 키
@@ -17,6 +17,7 @@ DB의 (씬, 광고) 쌍을 Gemini로 평가하여 cross_encoder_labels 테이블
 
 import argparse
 import logging
+import random
 import time
 from pathlib import Path
 
@@ -40,11 +41,11 @@ _MODELS = [
 ]
 _model_index = 0
 GEMINI_API_KEY = getattr(config, "GEMINI_API_KEY", "")
-_RPM_INTERVAL  = 1.0
+_RPM_INTERVAL  = 0.1
 
-LABEL_TRAIN        = "train"        # score > 0.9
-LABEL_REVIEW       = "review"       # 0.4 <= score <= 0.9
-LABEL_HUMAN_CHECK  = "human_check"  # score < 0.4
+LABEL_POSITIVE   = "positive"   # score >= 0.7
+LABEL_AMBIGUOUS  = "ambiguous"  # 0.3 < score < 0.7
+LABEL_NEGATIVE   = "negative"   # score <= 0.3
 
 # ── 라벨링 프롬프트 ────────────────────────────────────────────────────────────
 _PROMPT_TEMPLATE = (
@@ -118,20 +119,21 @@ def _parse_score(raw: str) -> float | None:
 
 
 def _assign_label(score: float) -> str:
-    if score > 0.9:
-        return LABEL_TRAIN
-    elif score >= 0.4:
-        return LABEL_REVIEW
-    else:
-        return LABEL_HUMAN_CHECK
+    if score >= 0.7:
+        return LABEL_POSITIVE
+    elif score <= 0.3:
+        return LABEL_NEGATIVE
+    return LABEL_AMBIGUOUS  # 0.3 < score < 0.7
 
 
 # ── DB 조회 ────────────────────────────────────────────────────────────────────
 
-def _get_pairs(limit: int | None, force: bool) -> list[dict]:
+def _get_pairs(limit: int | None, force: bool, ads_per_scene: int | None = None) -> list[dict]:
     """
     라벨링할 (씬, 광고) 쌍 조회.
+    씬 narrative는 analysis_scene_final에서 읽음.
     force=False이면 아직 라벨링되지 않은 쌍만 반환.
+    ads_per_scene이 지정되면 씬당 랜덤 샘플링.
     """
     if force:
         sql = """
@@ -139,7 +141,7 @@ def _get_pairs(limit: int | None, force: bool) -> list[dict]:
                    s.context_narrative,
                    a.ad_id,
                    a.target_narrative
-              FROM analysis_scene s
+              FROM analysis_scene_final s
               JOIN ad_inventory a ON TRUE
              WHERE s.context_narrative IS NOT NULL AND s.context_narrative <> ''
                AND a.target_narrative  IS NOT NULL AND a.target_narrative  <> ''
@@ -151,7 +153,7 @@ def _get_pairs(limit: int | None, force: bool) -> list[dict]:
                    s.context_narrative,
                    a.ad_id,
                    a.target_narrative
-              FROM analysis_scene s
+              FROM analysis_scene_final s
               JOIN ad_inventory a ON TRUE
              WHERE s.context_narrative IS NOT NULL AND s.context_narrative <> ''
                AND a.target_narrative  IS NOT NULL AND a.target_narrative  <> ''
@@ -162,30 +164,50 @@ def _get_pairs(limit: int | None, force: bool) -> list[dict]:
              ORDER BY s.id, a.ad_id
         """
 
-    if limit:
-        sql += f" LIMIT {int(limit)}"
+    rows = _db.fetchall(sql)
 
-    return _db.fetchall(sql)
+    if ads_per_scene:
+        # 씬별로 그룹핑 후 랜덤 샘플링
+        from collections import defaultdict
+        by_scene: dict[int, list[dict]] = defaultdict(list)
+        for row in rows:
+            by_scene[row["scene_id"]].append(row)
+        sampled = []
+        for scene_rows in by_scene.values():
+            sampled.extend(random.sample(scene_rows, min(ads_per_scene, len(scene_rows))))
+        random.shuffle(sampled)
+        rows = sampled
+
+    if limit:
+        rows = rows[:int(limit)]
+
+    return rows
 
 
 def _save_label(scene_id: int, ad_id: str, context: str, target: str, score: float, label: str) -> None:
-    _db.execute(
-        """
-        INSERT INTO cross_encoder_labels
-            (scene_id, ad_id, context_narrative, target_narrative, gemini_score, label)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT (scene_id, ad_id) DO UPDATE
-            SET gemini_score = EXCLUDED.gemini_score,
-                label        = EXCLUDED.label
-        """,
-        (scene_id, ad_id, context, target, score, label),
-    )
+    for attempt in range(5):
+        try:
+            _db.execute(
+                """
+                INSERT INTO cross_encoder_labels
+                    (scene_id, ad_id, context_narrative, target_narrative, gemini_score, label)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (scene_id, ad_id) DO UPDATE
+                    SET gemini_score = EXCLUDED.gemini_score,
+                        label        = EXCLUDED.label
+                """,
+                (scene_id, ad_id, context, target, score, label),
+            )
+            return
+        except Exception as exc:
+            logger.warning("DB save failed (attempt %d/5): %s", attempt + 1, exc)
+            time.sleep(5 * (attempt + 1))
 
 
 # ── 메인 ──────────────────────────────────────────────────────────────────────
 
-def run(limit: int | None = None, dry_run: bool = False, force: bool = False) -> None:
-    pairs = _get_pairs(limit, force)
+def run(limit: int | None = None, dry_run: bool = False, force: bool = False, ads_per_scene: int | None = None) -> None:
+    pairs = _get_pairs(limit, force, ads_per_scene)
     total = len(pairs)
     logger.info("Found %d pair(s) to label (force=%s, dry_run=%s)", total, force, dry_run)
 
@@ -221,9 +243,10 @@ def run(limit: int | None = None, dry_run: bool = False, force: bool = False) ->
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Gemini Cross-Encoder Label Generator")
-    parser.add_argument("--limit",   type=int,  default=None)
-    parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--force",   action="store_true", help="이미 라벨링된 쌍도 덮어쓰기")
+    parser.add_argument("--ads-per-scene", type=int,  default=None, help="씬당 랜덤 샘플링할 광고 수 (기본: 전체)")
+    parser.add_argument("--limit",         type=int,  default=None)
+    parser.add_argument("--dry-run",       action="store_true")
+    parser.add_argument("--force",         action="store_true", help="이미 라벨링된 쌍도 덮어쓰기")
     args = parser.parse_args()
 
-    run(limit=args.limit, dry_run=args.dry_run, force=args.force)
+    run(limit=args.limit, dry_run=args.dry_run, force=args.force, ads_per_scene=args.ads_per_scene)

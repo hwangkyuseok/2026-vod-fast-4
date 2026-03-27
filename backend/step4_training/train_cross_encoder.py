@@ -1,7 +1,7 @@
 """
 step4_training/train_cross_encoder.py — Cross-Encoder Fine-tuning
 ──────────────────────────────────────────────────────────────────
-cross_encoder_labels 테이블의 'train' 라벨 데이터로
+cross_encoder_labels 테이블의 positive/negative 라벨 데이터로
 ms-marco-MiniLM-L-12-v2를 Fine-tuning하여 로컬에 저장.
 
 실행:
@@ -30,12 +30,12 @@ DEFAULT_OUTPUT_DIR = "/app/storage/models/cross_encoder"
 # ── DB 조회 ────────────────────────────────────────────────────────────────────
 
 def _load_train_data() -> list[dict]:
-    """label='train'인 데이터만 로드."""
+    """positive/negative 라벨 데이터 로드 (ambiguous 제외)."""
     rows = _db.fetchall(
         """
         SELECT context_narrative, target_narrative, gemini_score
           FROM cross_encoder_labels
-         WHERE label = 'train'
+         WHERE label IN ('positive', 'negative')
          ORDER BY id
         """
     )
