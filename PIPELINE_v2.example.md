@@ -5,7 +5,7 @@
 > 실제 설정은 `PIPELINE_v2.md` (gitignore에 등록됨)에서 관리하세요.
 
 > **2026_VOD_FAST_4** | 비디오 문맥 분석 기반 동적 광고 오버레이 시스템
-> 현재 버전: **v2.13 (Step2 분리 + Step4 쿼리 최적화)**
+> 현재 버전: **v2.15 (음성 우선 알고리즘 — Step2 A=오디오, B=비전)**
 
 ---
 
@@ -38,10 +38,9 @@
         |
   Step 1: Preprocessing    ffmpeg 프레임/오디오 추출 + scenedetect 시각적 컷
         |
-  Step 2-A: Vision         YOLOv8l 객체 탐지 + VLM 고정샘플링 (컨테이너: step2-a)
-  Step 2-B: Audio          침묵 감지 + Whisper STT (컨테이너: step2-b)
-  Step 2-C: Phase A        MiniLM 임베딩 씬 분절 + VLM narrative (컨테이너: step2-c)
-                           ※ 2-A, 2-B 병렬 실행 → DB 플래그 게이트 → 2-C 실행
+  Step 2-A: Audio          faster-whisper STT + SBERT 씬 분절 (컨테이너: step2-a)
+  Step 2-B: Vision         씬별 YOLO 객체 탐지 + Gemini 상황/감정/욕구 (컨테이너: step2-b)
+                           ※ 2-A 완료 → QUEUE_STEP2B 발행 → 2-B 실행 (순차)
         |
   Step 3: Candidates       analysis_scene × ad_inventory Cartesian product
         |
@@ -60,10 +59,11 @@
 | 메시지 브로커 | RabbitMQ (pika) |
 | 데이터베이스 | PostgreSQL (psycopg2) |
 | 객체 감지 | YOLOv8l (ultralytics) |
-| 장면 이해 (Step2) | Qwen2-VL-2B-Instruct **또는** Gemini (VLM_BACKEND 환경변수) |
+| 장면 이해 (Step2) | Gemini Flash **또는** Qwen2-VL (VLM_BACKEND 환경변수) |
 | 광고 분석 | Gemini Flash (google-genai SDK) |
-| 의미 임베딩 | sentence-transformers (paraphrase-multilingual-MiniLM-L12-v2) |
-| STT | OpenAI Whisper small (Docker) |
+| STT | faster-whisper large-v3 (로컬 CPU) |
+| 씬 분절 | ko-sroberta-multitask SBERT (코사인 유사도) |
+| 의미 임베딩 | sentence-transformers (MiniLM-L6) |
 | 음성 분석 | librosa |
 | 씬 감지 | scenedetect>=0.6.4 |
 | 컨테이너 | Docker Compose v1 |
