@@ -129,10 +129,16 @@ $pidMap["step1"] = Start-Svc `
     -CmdArgs "-m step1_preprocessing.pipeline --consume" `
     -WorkDir $Backend
 
-$pidMap["step2"] = Start-Svc `
-    -Name    "Step2  Analysis" `
+$pidMap["step2a"] = Start-Svc `
+    -Name    "Step2-A Audio (Whisper+SBERT)" `
     -Exe     $PythonExe `
-    -CmdArgs "-m step2_analysis.consumer" `
+    -CmdArgs "-m step2_analysis.consumer_a" `
+    -WorkDir $Backend
+
+$pidMap["step2b"] = Start-Svc `
+    -Name    "Step2-B Vision (YOLO+Gemini)" `
+    -Exe     $PythonExe `
+    -CmdArgs "-m step2_analysis.consumer_b" `
     -WorkDir $Backend
 
 $pidMap["step3"] = Start-Svc `
@@ -142,9 +148,9 @@ $pidMap["step3"] = Start-Svc `
     -WorkDir $Backend
 
 $pidMap["step4"] = Start-Svc `
-    -Name    "Step4  Scoring" `
+    -Name    "Step4  Decision" `
     -Exe     $PythonExe `
-    -CmdArgs "-m step4_decision.scoring" `
+    -CmdArgs "-m step4_decision.decision" `
     -WorkDir $Backend
 
 $pidMap["step5"] = Start-Svc `
