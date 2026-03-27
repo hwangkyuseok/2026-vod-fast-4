@@ -1,40 +1,34 @@
 """
-Step 4 — Scoring & Decision Pipeline
-──────────────────────────────────────
+Step 4 — 최종 결정 (decision.py)
+──────────────────────────────────
+사전 필터(pre_filter.py)를 통과한 후보에 대해
+jimin(narrative 매칭)과 팀원(타이밍 프로파일)의 점수를 합산하여 최종 광고 삽입을 결정한다.
+
+점수 공식:
+  0~+80   narrative 유사도 스케일링 (Cross-Encoder → 추후 교체 예정)
+  +20     최적 윈도우 내 object_density ≤ 0.3 (빈 화면)
+  +15     최적 윈도우 내 침묵 구간 겹침
+  +10     ad_category 매칭 보너스 (NULL이면 미적용)
+  −40     최적 윈도우 내 object_density ≥ 0.7 (복잡한 화면)
+  [최종]  score < MIN_SCORE_TO_KEEP(20) → 광고 없음 판정
+
+변경 이력 (scoring.py → decision.py 이전 기준):
 v2.0  : 기본 키워드 스코어링
 v2.2  : Semantic embedding (context_summary ↔ ad_name + target_mood 앙상블)
 v2.3  : 중복 INSERT 방지 (DELETE-before-INSERT), _pick_best_and_deduplicate()
 v2.5  : target_narrative 우선 1:1 semantic 매칭 (score_narrative_fit)
 v2.6  : Scene-driven 전환
-        - 평가 순서 역전: Context Matching 1차 필터 → 물리적 수용성 2차 → 슬라이딩 윈도우
-        - SCORE_SILENCE_FITS / SCORE_AFTER_CUT 제거
         - _find_best_overlay_window(): 씬 내 1초 슬라이딩 윈도우로 최적 타임스탬프 확정
         - _get_silence_overlap(): 침묵 구간 겹침 시 가점
 v2.7  : 맥락 부적합 광고 억제
-        - NARRATIVE_THRESHOLD 0.30 → 0.50 (느슨한 관련성 제거)
-        - SCORE_SEMANTIC_MIN_SIM 0.25 → 0.40 (낮은 유사도 점수 억제)
-        - MIN_SCORE_TO_KEEP 1 → 20 (유사도+밀도 복합 조건 미달 시 광고 없음 판정)
-v2.10 : 카테고리 매칭 보너스 추가
-        - ad_category NULL이면 보너스 없음 (graceful degradation)
-        - context_narrative ↔ ad_category 유사도 ≥ 0.35 → +10점
-v2.12 : Step3 메시지 경량화 대응 — job_id만 수신 후 DB에서 직접 candidates 조회
-        (이전: candidates 전체를 RabbitMQ 메시지로 수신 → 97,161개 시 연결 타임아웃)
-v2.13 : Step4 쿼리 최적화 — vision frames + silence intervals 사전 일괄 조회
-        (이전: 97,161 candidates 루프 내 씬별 DB 쿼리 반복 → O(N) DB 왕복)
-        (이후: 루프 전 전체 prefetch → O(1) DB 왕복, 메모리 내 범위 필터링)
-
-스코어링 공식 (v2.10):
-  [1차 필터] similarity < NARRATIVE_THRESHOLD(0.50) → Skip
-  [2차 필터] video_clip: scene_duration < ad_duration → Skip
-  0~+80   score_narrative_fit(context_narrative, target_narrative)
-  +20     최적 윈도우 내 object_density ≤ 0.3
-  +15     최적 윈도우 내 침묵 구간 겹침 (가점)
-  +10     ad_category 매칭 보너스 (NULL이면 미적용)
-  −40     최적 윈도우 내 object_density ≥ 0.7
-  [최종]  score < MIN_SCORE_TO_KEEP(20) → 광고 없음 판정
+        - NARRATIVE_THRESHOLD 0.30 → 0.50, SCORE_SEMANTIC_MIN_SIM 0.25 → 0.40
+        - MIN_SCORE_TO_KEEP 1 → 20
+v2.10 : 카테고리 매칭 보너스 추가 (ad_category NULL이면 graceful skip)
+v2.12 : Step3 메시지 경량화 — job_id만 수신 후 DB에서 candidates 직접 조회
+v2.13 : vision frames + silence intervals 사전 일괄 조회 (O(N) → O(1) DB 왕복)
 
 Run:
-    python -m step4_decision.scoring
+    python -m step4_decision.decision
 """
 
 import bisect
@@ -46,7 +40,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from common import config, db as _db, rabbitmq as mq
 from common.logging_setup import setup_logging
-from step4_decision import embedding_scorer
+from step4_decision import embedding_scorer, pre_filter, cross_encoder_scorer
 # v2.13: build_candidates는 _on_message 내부에서 lazy import
 # (모듈 레벨 import 시 setup_logging("step3")이 실행되어 step4 log handler 교체됨)
 
@@ -59,7 +53,6 @@ logger = logging.getLogger(__name__)
 #                                     0.3~0.5 구간은 "느슨하게 관련" 수준으로 맥락 부적합
 #   SCORE_SEMANTIC_MIN_SIM 0.25→0.40: 스케일링 기준선 상향 → 낮은 유사도 점수 억제
 #   MIN_SCORE_TO_KEEP      1→20    : 유사도 낮거나 밀도 불량 시 "광고 없음" 판정
-NARRATIVE_THRESHOLD    = 0.30  # [TEST] 임시 하향 (0.50→0.30): 크로스링구얼 유사도 분포 확인용
 SCORE_LOW_DENSITY      = 20    # 최적 윈도우 object_density ≤ 0.3
 SCORE_SILENCE_BONUS    = 15    # 최적 윈도우 내 침묵 구간 겹침 가점
 SCORE_CATEGORY_BONUS   = 10    # ad_category ↔ context_narrative 유사도 ≥ 0.35 (NULL이면 미적용)
@@ -243,24 +236,12 @@ def _compute_score(
     ad_dur            = candidate.get("ad_duration_sec")
     ad_type           = candidate.get("ad_type", "banner")
 
-    # ── 1차 필터: Narrative 유사도 임계치 ─────────────────────────────────────
-    if precomputed_similarity is not None:
-        similarity = precomputed_similarity
-        logger.info("[SIM] sim=%.4f  ctx=%.40s  ad=%s", similarity, context_narrative, candidate.get("ad_id"))
-    elif embedding_scorer.is_available() and context_narrative and target_narrative:
-        similarity = embedding_scorer.score_narrative_fit(context_narrative, target_narrative)
-        logger.info("[SIM] sim=%.4f  ctx=%.40s  ad=%s", similarity, context_narrative, candidate.get("ad_id"))
-    else:
-        similarity = 0.0
+    # ── 사전 필터 ─────────────────────────────────────────────────────────────
+    passed, similarity = pre_filter.passes(candidate, precomputed_similarity)
+    if not passed:
+        return 0, None, similarity
 
-    if similarity < NARRATIVE_THRESHOLD:
-        logger.info("[SIM][SKIP] sim=%.4f < %.2f  ad=%s", similarity, NARRATIVE_THRESHOLD, candidate.get("ad_id"))
-        return 0, None, similarity  # 1차 필터 미달 → Skip
-
-    # ── 2차 필터: 물리적 수용 가능성 ─────────────────────────────────────────
     if ad_type == "video_clip" and ad_dur is not None:
-        if scene_duration < ad_dur:
-            return 0, None, similarity  # 씬이 광고보다 짧음 → Skip
         window_duration = ad_dur
     else:
         # 배너: 씬 내 기본 표시 시간만큼 윈도우 탐색
@@ -407,25 +388,36 @@ def run(job_id: str, candidates: list[dict]) -> None:
         # target_narrative가 있는 후보에 한해 N×M을 단일 행렬 곱으로 처리.
         # legacy(ad_name+mood) 후보는 _compute_score 내에서 개별 처리됨.
         sim_lookup: dict[tuple[str, str], float] = {}
-        if embedding_scorer.is_available() and candidates:
+        if candidates:
             pairs = [
                 (c.get("context_narrative") or "", c.get("target_narrative") or "")
                 for c in candidates
                 if c.get("context_narrative") and c.get("target_narrative")
             ]
             if pairs:
-                unique_ctx = list(dict.fromkeys(p[0] for p in pairs))
-                unique_tgt = list(dict.fromkeys(p[1] for p in pairs))
-                sim_matrix = embedding_scorer.batch_similarity_matrix(unique_ctx, unique_tgt)
-                ctx_idx = {t: i for i, t in enumerate(unique_ctx)}
-                tgt_idx = {t: i for i, t in enumerate(unique_tgt)}
-                for ctx, tgt in pairs:
-                    if (ctx, tgt) not in sim_lookup:
+                unique_pairs = list(dict.fromkeys(pairs))
+
+                if cross_encoder_scorer.is_available():
+                    # Cross-Encoder 배치 추론 (정밀 평가)
+                    scores = cross_encoder_scorer.batch_score(unique_pairs)
+                    sim_lookup = dict(zip(unique_pairs, scores))
+                    logger.info(
+                        "[%s] Cross-Encoder batch: %d pair(s) scored.",
+                        job_id, len(sim_lookup),
+                    )
+                elif embedding_scorer.is_available():
+                    # Fallback: MiniLM 코사인 유사도
+                    unique_ctx = list(dict.fromkeys(p[0] for p in unique_pairs))
+                    unique_tgt = list(dict.fromkeys(p[1] for p in unique_pairs))
+                    sim_matrix = embedding_scorer.batch_similarity_matrix(unique_ctx, unique_tgt)
+                    ctx_idx = {t: i for i, t in enumerate(unique_ctx)}
+                    tgt_idx = {t: i for i, t in enumerate(unique_tgt)}
+                    for ctx, tgt in unique_pairs:
                         sim_lookup[(ctx, tgt)] = float(sim_matrix[ctx_idx[ctx], tgt_idx[tgt]])
-                logger.info(
-                    "[%s] Batch similarity: %d pair(s) (%d ctx × %d ads) pre-computed.",
-                    job_id, len(sim_lookup), len(unique_ctx), len(unique_tgt),
-                )
+                    logger.info(
+                        "[%s] Fallback MiniLM batch: %d pair(s) (%d ctx × %d ads) pre-computed.",
+                        job_id, len(sim_lookup), len(unique_ctx), len(unique_tgt),
+                    )
 
         # ── v2.13: vision frames + silence intervals 사전 일괄 조회 ─────────
         # 루프 내 씬별 DB 쿼리(O(N))를 루프 전 1회 전체 조회(O(1))로 개선.

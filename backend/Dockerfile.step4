@@ -38,4 +38,4 @@ ENV PYTHONUNBUFFERED=1
 ENV HF_HOME=/models
 ENV TRANSFORMERS_CACHE=/models
 
-CMD ["python", "-m", "step4_decision.scoring", "--consume"]
+CMD ["python", "-m", "step4_decision.decision", "--consume"]
