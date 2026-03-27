@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from common.config import (
     FRAME_EXTRACTION_FPS,
     SCENE_CUT_THRESHOLD,
+    OPENCV_FRAME_INTERVAL,
     YOLO_CONFIDENCE_THRESHOLD,
     YOLO_BATCH_SIZE,
     YOLO_MODEL,
@@ -225,6 +226,10 @@ def analyse_frames(
     total = len(sorted_paths)
 
     for idx, fpath in enumerate(sorted_paths):
+        # OPENCV_FRAME_INTERVAL: N프레임마다 1프레임 처리
+        if idx % OPENCV_FRAME_INTERVAL != 0:
+            continue
+
         try:
             pil_img = Image.open(fpath).convert("RGB")
         except Exception as exc:

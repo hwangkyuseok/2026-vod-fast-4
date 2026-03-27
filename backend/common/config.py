@@ -70,7 +70,16 @@ VOD_DIR = os.getenv(
 
 # ─── Pipeline Parameters ─────────────────────────────────────────────────────
 FRAME_EXTRACTION_FPS      = int(os.getenv("FRAME_EXTRACTION_FPS",   "1"))
+# OpenCV 모션 탐지 파라미터 (튜닝 완료)
+# threshold=30: 프레임 간 픽셀 차이 임계값 (scene cut 판정)
+# frame_interval=5: N프레임마다 1프레임 처리 (속도/정확도 균형)
 SCENE_CUT_THRESHOLD       = float(os.getenv("SCENE_CUT_THRESHOLD",  "30.0"))
+OPENCV_FRAME_INTERVAL     = int(os.getenv("OPENCV_FRAME_INTERVAL",  "5"))
+# Silero VAD 파라미터 (튜닝 완료, librosa 대비 BGM 환경에서 우수)
+# threshold=0.5: 음성 감지 확률 임계값
+# min_silence_ms=1000: 최소 침묵 구간 (ms)
+VAD_THRESHOLD             = float(os.getenv("VAD_THRESHOLD",        "0.5"))
+VAD_MIN_SILENCE_MS        = int(os.getenv("VAD_MIN_SILENCE_MS",     "1000"))
 SILENCE_THRESHOLD_DB      = float(os.getenv("SILENCE_THRESHOLD_DB", "-40.0"))
 MIN_SILENCE_DURATION_SEC  = float(os.getenv("MIN_SILENCE_DURATION_SEC", "1.0"))
 # Default display time for banner-type ads
