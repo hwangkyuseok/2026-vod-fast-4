@@ -59,6 +59,8 @@ CREATE TABLE IF NOT EXISTS analysis_vision_context (
     safe_area_h      INTEGER,
     -- Object density: total bbox area / frame area (0.0 – 1.0)
     object_density   FLOAT,
+    -- YOLO detected class names (comma-separated, e.g. "bottle, cup, tv")
+    detected_objects TEXT,
     -- Qwen2-VL scene description
     scene_description TEXT,
     -- Scene cut flag (set on first frame after a cut)
@@ -195,3 +197,7 @@ CREATE TABLE IF NOT EXISTS decision_result (
 
 CREATE INDEX IF NOT EXISTS idx_dr_job_id ON decision_result(job_id);
 CREATE INDEX IF NOT EXISTS idx_dr_score  ON decision_result(job_id, score DESC);
+
+-- ─── Migration: detected_objects 컬럼 추가 (이미 존재하면 무시) ──────────────
+ALTER TABLE analysis_vision_context
+    ADD COLUMN IF NOT EXISTS detected_objects TEXT;

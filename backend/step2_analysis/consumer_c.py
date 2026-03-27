@@ -156,6 +156,32 @@ def _sample_frames_for_scene(
     return [frame_paths[i] for i in indices]
 
 
+def _get_scene_detected_objects(job_id: str, start_sec: float, end_sec: float) -> str:
+    """
+    씬 구간 [start_sec, end_sec) 내 YOLO 탐지 객체명을 DB에서 조회하여
+    중복 제거 후 쉼표 구분 문자열로 반환한다.
+    """
+    rows = _db.fetchall(
+        """
+        SELECT detected_objects
+          FROM analysis_vision_context
+         WHERE job_id = %s
+           AND timestamp_sec >= %s
+           AND timestamp_sec < %s
+           AND detected_objects IS NOT NULL
+           AND detected_objects <> ''
+        """,
+        (job_id, start_sec, end_sec),
+    )
+    all_objects: set[str] = set()
+    for row in rows:
+        for obj in (row["detected_objects"] or "").split(","):
+            obj = obj.strip()
+            if obj:
+                all_objects.add(obj)
+    return ", ".join(sorted(all_objects))
+
+
 def _generate_scene_contexts(
     job_id: str,
     transcript_segments: list[dict],
@@ -183,6 +209,13 @@ def _generate_scene_contexts(
 
         sampled_frames = _sample_frames_for_scene(frame_paths, s_start, s_end, n=4)
 
+        # 씬 구간 내 YOLO 탐지 객체 조회 → Gemini에 전달
+        detected_objects = _get_scene_detected_objects(job_id, s_start, s_end)
+        logger.debug(
+            "[%s] Scene %d [%.1f-%.1f] detected_objects: %s",
+            job_id, idx + 1, s_start, s_end, detected_objects or "(none)",
+        )
+
         narrative = ""
         try:
             narrative = _vlm.analyse_scene_context(
@@ -190,6 +223,7 @@ def _generate_scene_contexts(
                 transcript_text=transcript_text,
                 scene_start_sec=s_start,
                 scene_end_sec=s_end,
+                detected_objects=detected_objects,
             )
         except Exception as exc:
             logger.warning(
