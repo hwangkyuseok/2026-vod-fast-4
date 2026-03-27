@@ -70,7 +70,16 @@ VOD_DIR = os.getenv(
 
 # ─── Pipeline Parameters ─────────────────────────────────────────────────────
 FRAME_EXTRACTION_FPS      = int(os.getenv("FRAME_EXTRACTION_FPS",   "1"))
+# OpenCV 모션 탐지 파라미터 (튜닝 완료)
+# threshold=30: 프레임 간 픽셀 차이 임계값 (scene cut 판정)
+# frame_interval=5: N프레임마다 1프레임 처리 (속도/정확도 균형)
 SCENE_CUT_THRESHOLD       = float(os.getenv("SCENE_CUT_THRESHOLD",  "30.0"))
+OPENCV_FRAME_INTERVAL     = int(os.getenv("OPENCV_FRAME_INTERVAL",  "5"))
+# Silero VAD 파라미터 (튜닝 완료, librosa 대비 BGM 환경에서 우수)
+# threshold=0.5: 음성 감지 확률 임계값
+# min_silence_ms=1000: 최소 침묵 구간 (ms)
+VAD_THRESHOLD             = float(os.getenv("VAD_THRESHOLD",        "0.5"))
+VAD_MIN_SILENCE_MS        = int(os.getenv("VAD_MIN_SILENCE_MS",     "1000"))
 SILENCE_THRESHOLD_DB      = float(os.getenv("SILENCE_THRESHOLD_DB", "-40.0"))
 MIN_SILENCE_DURATION_SEC  = float(os.getenv("MIN_SILENCE_DURATION_SEC", "1.0"))
 # Default display time for banner-type ads
@@ -88,6 +97,14 @@ RCNN_BATCH_SIZE           = int(os.getenv("RCNN_BATCH_SIZE",           "200"))
 YOLO_MODEL                = os.getenv("YOLO_MODEL",                "yolov8l.pt")
 YOLO_CONFIDENCE_THRESHOLD = float(os.getenv("YOLO_CONFIDENCE_THRESHOLD", "0.35"))
 YOLO_BATCH_SIZE           = int(os.getenv("YOLO_BATCH_SIZE",           "200"))
+# imgsz: inference image size (px) — 640(default) → 800 for better small-object detection
+YOLO_IMGSZ                = int(os.getenv("YOLO_IMGSZ",               "800"))
+# MVP 탐지 클래스 ID (COCO 0-indexed) — 15개
+# dog(16) handbag(26) bottle(39) cup(41) bowl(45) pizza(53)
+# chair(56) couch(57) bed(59) dining_table(60) tv(62) laptop(63)
+# remote(65) cell_phone(67) refrigerator(72)
+_raw_class_ids            = os.getenv("YOLO_CLASS_IDS", "16,26,39,41,45,53,56,57,59,60,62,63,65,67,72")
+YOLO_CLASS_IDS            = [int(x) for x in _raw_class_ids.split(",")]
 # Whisper STT model size: tiny | base | small | medium | large
 # 'small' (244M) 이상 권장 — base(74M)는 한국어 인식률이 낮아 대사가 깨짐
 # v2.5+: task=transcribe + language=ko 사용 (번역 없이 한국어 원문 유지)
@@ -97,7 +114,7 @@ WHISPER_MODEL             = os.getenv("WHISPER_MODEL", "small")
 # VLM_BACKEND: "qwen" (로컬 Qwen2-VL) | "gemini" (Google Gemini Flash API)
 VLM_BACKEND  = os.getenv("VLM_BACKEND",  "qwen")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL   = os.getenv("GEMINI_MODEL",   "gemini-2.0-flash")
+GEMINI_MODEL   = os.getenv("GEMINI_MODEL",   "gemini-2.5-flash-preview-04-17")
 
 # ─── API Server ───────────────────────────────────────────────────────────────
 API_HOST     = os.getenv("API_HOST",     "0.0.0.0")
