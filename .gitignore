@@ -62,6 +62,8 @@ logs/
 *.avi
 *.mov
 *.ts
+!frontend/**/*.ts
+!frontend/**/*.tsx
 *.m4v
 
 # ─── ML Model Cache ───────────────────────────────────────────────────────────
