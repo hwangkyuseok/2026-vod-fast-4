@@ -34,8 +34,8 @@ services:
   # ── Step 1: 전처리 (프레임 추출 / 오디오 디먹싱) ──────────────────────────
   step1:
     build:
-      context: /app/Docker/pipeline
-      dockerfile: backend/Dockerfile.step1
+      context: /app/Docker/pipeline/backend
+      dockerfile: Dockerfile.step1
     image: vod-step1:latest
     restart: unless-stopped
     environment:
@@ -59,8 +59,8 @@ services:
   # ── Step 2-A: 비전 분석 (YOLO + VLM 고정 샘플링) ─────────────────────────
   step2-a:
     build:
-      context: /app/Docker/pipeline
-      dockerfile: backend/Dockerfile.step2a
+      context: /app/Docker/pipeline/backend
+      dockerfile: Dockerfile.step2a
     image: vod-step2a:latest
     restart: unless-stopped
     environment:
@@ -89,8 +89,8 @@ services:
   # ── Step 2-B: 오디오 분석 (침묵 감지 + Whisper STT) ──────────────────────
   step2-b:
     build:
-      context: /app/Docker/pipeline
-      dockerfile: backend/Dockerfile.step2b
+      context: /app/Docker/pipeline/backend
+      dockerfile: Dockerfile.step2b
     image: vod-step2b:latest
     restart: unless-stopped
     environment:
@@ -117,8 +117,8 @@ services:
   # ── Step 2-C: Phase A (씬 분절 + VLM narrative, DB 플래그 게이트) ─────────
   step2-c:
     build:
-      context: /app/Docker/pipeline
-      dockerfile: backend/Dockerfile.step2c
+      context: /app/Docker/pipeline/backend
+      dockerfile: Dockerfile.step2c
     image: vod-step2c:latest
     restart: unless-stopped
     depends_on:
@@ -150,8 +150,8 @@ services:
   # ── Step 3: 후보 페어 생성 (analysis_scene × ad_inventory) ────────────────
   step3:
     build:
-      context: /app/Docker/pipeline
-      dockerfile: backend/Dockerfile.step3
+      context: /app/Docker/pipeline/backend
+      dockerfile: Dockerfile.step3
     image: vod-step3:latest
     restart: unless-stopped
     depends_on:
@@ -176,8 +176,8 @@ services:
   # ── Step 4: 스코어링 / 광고 결정 ─────────────────────────────────────────
   step4:
     build:
-      context: /app/Docker/pipeline
-      dockerfile: backend/Dockerfile.step4
+      context: /app/Docker/pipeline/backend
+      dockerfile: Dockerfile.step4
     image: vod-step4:latest
     restart: unless-stopped
     depends_on:
@@ -205,8 +205,8 @@ services:
   # ── Step 5: FastAPI 서버 ──────────────────────────────────────────────────
   step5-api:
     build:
-      context: /app/Docker/pipeline
-      dockerfile: backend/Dockerfile.step5
+      context: /app/Docker/pipeline/backend
+      dockerfile: Dockerfile.step5
     image: vod-step5:latest
     restart: unless-stopped
     depends_on:
