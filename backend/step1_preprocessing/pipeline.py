@@ -182,18 +182,9 @@ def run(job_id: str, video_path: str) -> None:
         save_to_db(job_id, video_path, audio_path, frame_dir, meta, scene_cut_times=scene_cuts)
         _update_job_status(job_id, "analysing")
 
-        # v2.13: Step2 분리 — 2-A (vision)과 2-B (audio) 두 큐에 동시 발행
-        # 재처리 시 gate 플래그 리셋
-        _db.execute(
-            "UPDATE job_history SET step2a_done=FALSE, step2b_done=FALSE WHERE job_id=%s",
-            (job_id,),
-        )
+        # v2.15: Step2-A (오디오) 먼저 실행 → 완료 후 Step2-B (비전) 순차 실행
         mq.publish(config.QUEUE_STEP2A, {"job_id": job_id})
-        mq.publish(config.QUEUE_STEP2B, {"job_id": job_id})
-        logger.info(
-            "Step-1 complete - published to %s and %s",
-            config.QUEUE_STEP2A, config.QUEUE_STEP2B,
-        )
+        logger.info("Step-1 complete → published to %s", config.QUEUE_STEP2A)
 
     except Exception as exc:
         _update_job_status(job_id, "failed", str(exc))

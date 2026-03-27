@@ -1,23 +1,22 @@
 # requirements.step2a.txt
-# step2-a 전용 의존성 — YOLO 객체 탐지 + VLM 고정 샘플링
-# (torch / torchvision 은 Dockerfile 에서 CPU-only 버전으로 별도 설치)
+# step2-a 전용 의존성 — 오디오 우선 분석 (faster-whisper + SBERT 씬 분절)
+# (torch 는 Dockerfile 에서 CPU-only 버전으로 별도 설치)
 
 # ── 데이터베이스 / 메시지큐 ──────────────────────────────────────────────────
 psycopg2-binary>=2.9.9
 pika>=1.3.2
 
-# ── 비전 (YOLO) ──────────────────────────────────────────────────────────────
-ultralytics>=8.0.0
-opencv-python-headless>=4.10.0
-Pillow>=10.4.0
+# ── STT (faster-whisper) ─────────────────────────────────────────────────────
+# openai-whisper 대비 약 4배 빠름, large-v3 + VAD 필터 지원
+faster-whisper>=1.0.0
 
-# ── VLM (Qwen2-VL) ───────────────────────────────────────────────────────────
-transformers>=4.44.0
-accelerate>=0.33.0
-qwen-vl-utils>=0.0.2
+# ── 씬 분절 (SBERT — 한국어 전용) ───────────────────────────────────────────
+sentence-transformers>=3.0.0
+scikit-learn>=1.3.0
 
-# ── VLM 대체 (Gemini Flash API) ───────────────────────────────────────────────
-google-genai>=1.0.0
+# ── 침묵 감지 (librosa) ───────────────────────────────────────────────────────
+librosa>=0.10.2
+soundfile>=0.12.1
 
 # ── 유틸리티 ─────────────────────────────────────────────────────────────────
 numpy>=1.26.0
