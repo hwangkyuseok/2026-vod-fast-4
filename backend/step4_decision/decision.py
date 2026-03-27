@@ -1,18 +1,23 @@
 """
 Step 4 — 최종 결정 (decision.py)
 ──────────────────────────────────
-사전 필터(pre_filter.py)를 통과한 후보에 대해
-jimin(narrative 매칭)과 팀원(타이밍 프로파일)의 점수를 합산하여 최종 광고 삽입을 결정한다.
+1. Cross-Encoder로 모든 (씬, 광고) 쌍의 관련도 배치 스코어링 (0.0~1.0)
+2. 상위 30개만 선택 (성능 최적화)
+3. 각 후보에 대해:
+   - 사전 필터: 씬 길이, 유사도 임계값
+   - 슬라이딩 윈도우: 최적 광고 위치 탐색
+   - 다중 점수 계산: Base Score + Bonuses/Penalties
+4. 최종 점수로 광고 삽입 여부 결정
 
-점수 공식:
-  0~+80   narrative 유사도 스케일링 (Cross-Encoder → 추후 교체 예정)
+점수 공식 (Cross-Encoder 기반):
+  0~+80   Cross-Encoder score (0.40~1.0) → Base Score (0~+80)
   +20     최적 윈도우 내 object_density ≤ 0.3 (빈 화면)
   +15     최적 윈도우 내 침묵 구간 겹침
   +10     ad_category 매칭 보너스 (NULL이면 미적용)
   −40     최적 윈도우 내 object_density ≥ 0.7 (복잡한 화면)
   [최종]  score < MIN_SCORE_TO_KEEP(20) → 광고 없음 판정
 
-변경 이력 (scoring.py → decision.py 이전 기준):
+변경 이력:
 v2.0  : 기본 키워드 스코어링
 v2.2  : Semantic embedding (context_summary ↔ ad_name + target_mood 앙상블)
 v2.3  : 중복 INSERT 방지 (DELETE-before-INSERT), _pick_best_and_deduplicate()
@@ -26,6 +31,9 @@ v2.7  : 맥락 부적합 광고 억제
 v2.10 : 카테고리 매칭 보너스 추가 (ad_category NULL이면 graceful skip)
 v2.12 : Step3 메시지 경량화 — job_id만 수신 후 DB에서 candidates 직접 조회
 v2.13 : vision frames + silence intervals 사전 일괄 조회 (O(N) → O(1) DB 왕복)
+v2.14 : Cross-Encoder 배치 스코어링 후 상위 30개만 처리 (성능 최적화)
+        - cross_encoder_scorer.batch_score(): N×M 모든 쌍 스코어링
+        - Top-30 필터링: 높은 관련도의 후보만 추출
 
 Run:
     python -m step4_decision.decision
@@ -59,8 +67,8 @@ SCORE_CATEGORY_BONUS   = 10    # ad_category ↔ context_narrative 유사도 ≥
 CATEGORY_SIM_THRESHOLD = 0.35  # 카테고리 보너스 적용 최소 유사도
 PENALTY_HIGH_DENSITY   = -40   # 최적 윈도우 object_density ≥ 0.7
 
-SCORE_SEMANTIC_MAX     = 80    # similarity=1.0 → +80점
-SCORE_SEMANTIC_MIN_SIM = 0.40  # threshold 통과 후 스케일링 하한 (NARRATIVE_THRESHOLD와 별개)
+SCORE_SEMANTIC_MAX     = 80    # Cross-Encoder score 1.0 → base score +80점
+SCORE_SEMANTIC_MIN_SIM = 0.40  # Cross-Encoder 점수 스케일링 하한 (pre-filter threshold와 별개)
 
 MIN_SCORE_TO_KEEP      = 20    # 이 미만 점수 후보 제거 → 맥락 부적합 광고 배제
 
@@ -266,7 +274,8 @@ def _compute_score(
     # ── 점수 산출 ─────────────────────────────────────────────────────────────
     score = 0
 
-    # semantic 점수 (0~+80): NARRATIVE_THRESHOLD 통과 이후 SCORE_SEMANTIC_MIN_SIM 기준 스케일
+    # semantic 점수 (0~+80): Cross-Encoder score (0.40~1.0) → Base Score (0~+80)
+    # 라인 451-454에서 precomputed_similarity로 전달받은 Cross-Encoder score 사용
     if similarity >= SCORE_SEMANTIC_MIN_SIM:
         scaled = (similarity - SCORE_SEMANTIC_MIN_SIM) / (1.0 - SCORE_SEMANTIC_MIN_SIM)
         score += int(scaled * SCORE_SEMANTIC_MAX)
@@ -388,6 +397,45 @@ def run(job_id: str, candidates: list[dict]) -> None:
         # target_narrative가 있는 후보에 한해 N×M을 단일 행렬 곱으로 처리.
         # legacy(ad_name+mood) 후보는 _compute_score 내에서 개별 처리됨.
         sim_lookup: dict[tuple[str, str], float] = {}
+
+        # ── 1단계: MiniLM pre-filter (씬길이/코사인유사도로 후보 대폭 감소) ──────
+        if candidates and embedding_scorer.is_available():
+            unique_ctx = list(dict.fromkeys(
+                c.get("context_narrative") or "" for c in candidates
+                if c.get("context_narrative") and c.get("target_narrative")
+            ))
+            unique_tgt = list(dict.fromkeys(
+                c.get("target_narrative") or "" for c in candidates
+                if c.get("context_narrative") and c.get("target_narrative")
+            ))
+            minilm_lookup: dict[tuple[str, str], float] = {}
+            if unique_ctx and unique_tgt:
+                sim_matrix = embedding_scorer.batch_similarity_matrix(unique_ctx, unique_tgt)
+                ctx_idx = {t: i for i, t in enumerate(unique_ctx)}
+                tgt_idx = {t: i for i, t in enumerate(unique_tgt)}
+                for c in candidates:
+                    ctx = c.get("context_narrative") or ""
+                    tgt = c.get("target_narrative") or ""
+                    if ctx and tgt:
+                        minilm_lookup[(ctx, tgt)] = float(sim_matrix[ctx_idx[ctx], tgt_idx[tgt]])
+
+            before = len(candidates)
+            filtered = []
+            for c in candidates:
+                ctx = c.get("context_narrative") or ""
+                tgt = c.get("target_narrative") or ""
+                precomputed = minilm_lookup.get((ctx, tgt))
+                passed, _ = pre_filter.passes(c, precomputed)
+                if passed:
+                    filtered.append(c)
+            candidates = filtered
+            logger.info(
+                "[%s] pre-filter: %d → %d candidates",
+                job_id, before, len(candidates),
+            )
+
+        # ── 2단계: Cross-Encoder 배치 스코어링 → 상위 30개 선택 ─────────────────
+        TOP_K_CANDIDATES = 30
         if candidates:
             pairs = [
                 (c.get("context_narrative") or "", c.get("target_narrative") or "")
@@ -396,17 +444,28 @@ def run(job_id: str, candidates: list[dict]) -> None:
             ]
             if pairs:
                 unique_pairs = list(dict.fromkeys(pairs))
-
                 if cross_encoder_scorer.is_available():
-                    # Cross-Encoder 배치 추론 (정밀 평가)
                     scores = cross_encoder_scorer.batch_score(unique_pairs)
                     sim_lookup = dict(zip(unique_pairs, scores))
                     logger.info(
                         "[%s] Cross-Encoder batch: %d pair(s) scored.",
                         job_id, len(sim_lookup),
                     )
-                elif embedding_scorer.is_available():
-                    # Fallback: MiniLM 코사인 유사도
+                    # CE 점수 기준 상위 TOP_K만 선택
+                    scored_list = [
+                        (c, sim_lookup.get(
+                            (c.get("context_narrative") or "", c.get("target_narrative") or ""), 0.0
+                        ))
+                        for c in candidates
+                    ]
+                    scored_list.sort(key=lambda x: x[1], reverse=True)
+                    candidates = [c for c, _ in scored_list[:TOP_K_CANDIDATES]]
+                    logger.info(
+                        "[%s] Top-%d selected by Cross-Encoder (from %d).",
+                        job_id, len(candidates), len(scored_list),
+                    )
+                elif not sim_lookup:
+                    # CE 없고 MiniLM도 없는 경우 fallback
                     unique_ctx = list(dict.fromkeys(p[0] for p in unique_pairs))
                     unique_tgt = list(dict.fromkeys(p[1] for p in unique_pairs))
                     sim_matrix = embedding_scorer.batch_similarity_matrix(unique_ctx, unique_tgt)
@@ -415,8 +474,8 @@ def run(job_id: str, candidates: list[dict]) -> None:
                     for ctx, tgt in unique_pairs:
                         sim_lookup[(ctx, tgt)] = float(sim_matrix[ctx_idx[ctx], tgt_idx[tgt]])
                     logger.info(
-                        "[%s] Fallback MiniLM batch: %d pair(s) (%d ctx × %d ads) pre-computed.",
-                        job_id, len(sim_lookup), len(unique_ctx), len(unique_tgt),
+                        "[%s] Fallback MiniLM batch: %d pair(s) pre-computed.",
+                        job_id, len(sim_lookup),
                     )
 
         # ── v2.13: vision frames + silence intervals 사전 일괄 조회 ─────────
