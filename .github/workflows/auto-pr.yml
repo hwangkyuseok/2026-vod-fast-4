@@ -1,0 +1,46 @@
+name: Auto Create PR
+
+on:
+  push:
+    branches:
+      - '**'
+      - '!main'
+
+jobs:
+  create-pr:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check if PR already exists
+        id: check_pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="${{ github.ref_name }}"
+          EXISTING=$(gh pr list --repo ${{ github.repository }} --head "$BRANCH" --base main --json number --jq '.[0].number // empty')
+          echo "existing=$EXISTING" >> $GITHUB_OUTPUT
+
+      - name: Create PR
+        if: steps.check_pr.outputs.existing == ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="${{ github.ref_name }}"
+          gh pr create \
+            --repo ${{ github.repository }} \
+            --head "$BRANCH" \
+            --base main \
+            --title "$BRANCH" \
+            --body "## Summary
+          - 브랜치: \`$BRANCH\`
+          - 커밋: ${{ github.sha }}
+
+          ## Test plan
+          - [ ] 변경사항 검토
+          - [ ] 테스트 확인" \
+            --reviewer hwangkyuseok,cnrkddl
