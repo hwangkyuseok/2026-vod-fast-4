@@ -38,13 +38,12 @@ RABBITMQ_URL      = (
 # 환경변수 QUEUE_PREFIX 로 명시적 지정 가능 (e.g. "staging").
 _QUEUE_PREFIX = os.getenv("QUEUE_PREFIX", "dev" if _IS_WINDOWS else "prod")
 
-QUEUE_STEP1 = f"vod.{_QUEUE_PREFIX}.step1.preprocess"
-QUEUE_STEP2 = f"vod.{_QUEUE_PREFIX}.step2.analysis"       # legacy (단일 컨테이너용, 유지)
-QUEUE_STEP2A = f"vod.{_QUEUE_PREFIX}.step2a.vision"        # v2.13: 2-A (YOLO + VLM)
-QUEUE_STEP2B = f"vod.{_QUEUE_PREFIX}.step2b.audio"         # v2.13: 2-B (침묵 + Whisper)
-QUEUE_STEP2_GATE = f"vod.{_QUEUE_PREFIX}.step2.gate"       # v2.13: 2-C gate (Phase A)
-QUEUE_STEP3 = f"vod.{_QUEUE_PREFIX}.step3.persistence"
-QUEUE_STEP4 = f"vod.{_QUEUE_PREFIX}.step4.decision"
+QUEUE_STEP1  = f"vod.{_QUEUE_PREFIX}.step1.preprocess"
+QUEUE_STEP2  = f"vod.{_QUEUE_PREFIX}.step2.analysis"       # legacy (유지)
+QUEUE_STEP2A = f"vod.{_QUEUE_PREFIX}.step2a.audio"         # v2.15: 2-A (오디오 우선: faster-whisper + SBERT 분절)
+QUEUE_STEP2B = f"vod.{_QUEUE_PREFIX}.step2b.vision"        # v2.15: 2-B (비전 후속: 씬별 YOLO + Gemini)
+QUEUE_STEP3  = f"vod.{_QUEUE_PREFIX}.step3.persistence"
+QUEUE_STEP4  = f"vod.{_QUEUE_PREFIX}.step4.decision"
 
 # ─── Ad Resources ────────────────────────────────────────────────────────────
 AD_VIDEO_DIR = os.getenv(
@@ -105,10 +104,17 @@ YOLO_IMGSZ                = int(os.getenv("YOLO_IMGSZ",               "800"))
 # remote(65) cell_phone(67) refrigerator(72)
 _raw_class_ids            = os.getenv("YOLO_CLASS_IDS", "16,26,39,41,45,53,56,57,59,60,62,63,65,67,72")
 YOLO_CLASS_IDS            = [int(x) for x in _raw_class_ids.split(",")]
-# Whisper STT model size: tiny | base | small | medium | large
-# 'small' (244M) 이상 권장 — base(74M)는 한국어 인식률이 낮아 대사가 깨짐
-# v2.5+: task=transcribe + language=ko 사용 (번역 없이 한국어 원문 유지)
+# Whisper STT model size (legacy openai-whisper, 하위 호환용)
 WHISPER_MODEL             = os.getenv("WHISPER_MODEL", "small")
+# faster-whisper 모델 (Step2-A 전용)
+# large-v3 권장 — VAD 필터 포함, 한국어 정확도 최고
+FASTER_WHISPER_MODEL      = os.getenv("FASTER_WHISPER_MODEL", "large-v3")
+# SBERT 씬 분절 설정 (Step2-A 전용)
+SBERT_MODEL               = os.getenv("SBERT_MODEL",            "jhgan/ko-sroberta-multitask")
+SBERT_SILENCE_GAP_SEC     = float(os.getenv("SBERT_SILENCE_GAP_SEC", "4.0"))
+SBERT_SIM_THRESHOLD       = float(os.getenv("SBERT_SIM_THRESHOLD",   "0.3"))
+# Gemini 씬별 프레임 샘플 수 (Step2-B 전용)
+SCENE_SAMPLE_FRAMES       = int(os.getenv("SCENE_SAMPLE_FRAMES", "3"))
 
 # ─── Gemini Flash API ────────────────────────────────────────────────────────
 # VLM_BACKEND: "qwen" (로컬 Qwen2-VL) | "gemini" (Google Gemini Flash API)

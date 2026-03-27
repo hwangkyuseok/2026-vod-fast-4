@@ -1,6 +1,6 @@
 # docker-compose.pipeline.yml
 # ─────────────────────────────────────────────────────────────────────────────
-# VOD 광고 오버레이 파이프라인 — 전체 서비스 구성 (v2.14)
+# VOD 광고 오버레이 파이프라인 — 전체 서비스 구성 (v2.15)
 #
 # 서버 배포 경로:
 #   백엔드  : /app/Docker/pipeline/
@@ -8,14 +8,15 @@
 #   이 파일 : /app/Docker/pipeline/
 #
 # 이미지 구조 (서비스별 완전 분리):
-#   vod-step1    : step1  (Dockerfile.step1)
-#   vod-step2a   : step2-a (Dockerfile.step2a)
-#   vod-step2b   : step2-b (Dockerfile.step2b)
-#   vod-step2c   : step2-c (Dockerfile.step2c)
-#   vod-step3    : step3  (Dockerfile.step3)
-#   vod-step4    : step4  (Dockerfile.step4)
+#   vod-step1    : step1   (Dockerfile.step1)
+#   vod-step2a   : step2-a (Dockerfile.step2a) — 오디오 우선: faster-whisper + SBERT
+#   vod-step2b   : step2-b (Dockerfile.step2b) — 비전 후속: 씬별 YOLO + Gemini
+#   vod-step3    : step3   (Dockerfile.step3)
+#   vod-step4    : step4   (Dockerfile.step4)
 #   vod-step5    : step5-api (Dockerfile.step5)
-#   vod-frontend : frontend (Dockerfile.frontend)
+#   vod-frontend : frontend  (Dockerfile.frontend)
+#
+# Step2 실행 순서: step2-a → QUEUE_STEP2B → step2-b (순차, gate 없음)
 #
 # 최초 실행:
 #   cp .env.example .env  # .env 파일 생성 후 실제 값 입력
@@ -56,7 +57,7 @@ services:
       - /app/HelloVision/data/storage:/app/storage
       - /app/HelloVision/data/logs:/app/storage/logs
 
-  # ── Step 2-A: 비전 분석 (YOLO + VLM 고정 샘플링) ─────────────────────────
+  # ── Step 2-A: 오디오 우선 분석 (faster-whisper + SBERT 씬 분절) ──────────
   step2-a:
     build:
       context: /app/Docker/pipeline/backend
@@ -75,9 +76,10 @@ services:
       RABBITMQ_PASSWORD: "${RABBITMQ_PASSWORD}"
       QUEUE_PREFIX: "${QUEUE_PREFIX:-prod}"
       STORAGE_BASE: "/app/storage"
-      VLM_BACKEND: "${VLM_BACKEND:-gemini}"
-      GEMINI_API_KEY: "${GEMINI_API_KEY}"
-      GEMINI_MODEL: "${GEMINI_MODEL:-gemini-2.0-flash}"
+      FASTER_WHISPER_MODEL: "${FASTER_WHISPER_MODEL:-large-v3}"
+      SBERT_MODEL: "${SBERT_MODEL:-jhgan/ko-sroberta-multitask}"
+      SBERT_SILENCE_GAP_SEC: "${SBERT_SILENCE_GAP_SEC:-4.0}"
+      SBERT_SIM_THRESHOLD: "${SBERT_SIM_THRESHOLD:-0.3}"
       TZ: "${TZ:-Asia/Seoul}"
       HF_HOME: "/models"
       TRANSFORMERS_CACHE: "/models"
@@ -86,44 +88,15 @@ services:
       - /app/HelloVision/data/logs:/app/storage/logs
       - step2a_model_cache:/models
 
-  # ── Step 2-B: 오디오 분석 (침묵 감지 + Whisper STT) ──────────────────────
+  # ── Step 2-B: 비전 후속 분석 (씬별 YOLO + Gemini → 상황/감정/욕구) ───────
   step2-b:
     build:
       context: /app/Docker/pipeline/backend
       dockerfile: Dockerfile.step2b
     image: vod-step2b:latest
     restart: unless-stopped
-    environment:
-      DB_HOST: "${DB_HOST}"
-      DB_PORT: "${DB_PORT:-5432}"
-      DB_NAME: "${DB_NAME}"
-      DB_USER: "${DB_USER}"
-      DB_PASSWORD: "${DB_PASSWORD}"
-      RABBITMQ_HOST: "${RABBITMQ_HOST}"
-      RABBITMQ_PORT: "${RABBITMQ_PORT:-5672}"
-      RABBITMQ_USER: "${RABBITMQ_USER}"
-      RABBITMQ_PASSWORD: "${RABBITMQ_PASSWORD}"
-      QUEUE_PREFIX: "${QUEUE_PREFIX:-prod}"
-      STORAGE_BASE: "/app/storage"
-      WHISPER_MODEL: "${WHISPER_MODEL:-small}"
-      TZ: "${TZ:-Asia/Seoul}"
-      HF_HOME: "/models"
-      TRANSFORMERS_CACHE: "/models"
-    volumes:
-      - /app/HelloVision/data/storage:/app/storage
-      - /app/HelloVision/data/logs:/app/storage/logs
-      - step2b_model_cache:/models
-
-  # ── Step 2-C: Phase A (씬 분절 + VLM narrative, DB 플래그 게이트) ─────────
-  step2-c:
-    build:
-      context: /app/Docker/pipeline/backend
-      dockerfile: Dockerfile.step2c
-    image: vod-step2c:latest
-    restart: unless-stopped
     depends_on:
       - step2-a
-      - step2-b
     environment:
       DB_HOST: "${DB_HOST}"
       DB_PORT: "${DB_PORT:-5432}"
@@ -138,14 +111,15 @@ services:
       STORAGE_BASE: "/app/storage"
       VLM_BACKEND: "${VLM_BACKEND:-gemini}"
       GEMINI_API_KEY: "${GEMINI_API_KEY}"
-      GEMINI_MODEL: "${GEMINI_MODEL:-gemini-2.0-flash}"
+      GEMINI_MODEL: "${GEMINI_MODEL:-gemini-2.5-flash-preview-04-17}"
+      SCENE_SAMPLE_FRAMES: "${SCENE_SAMPLE_FRAMES:-3}"
       TZ: "${TZ:-Asia/Seoul}"
       HF_HOME: "/models"
       TRANSFORMERS_CACHE: "/models"
     volumes:
       - /app/HelloVision/data/storage:/app/storage
       - /app/HelloVision/data/logs:/app/storage/logs
-      - step2c_model_cache:/models
+      - step2b_model_cache:/models
 
   # ── Step 3: 후보 페어 생성 (analysis_scene × ad_inventory) ────────────────
   step3:
@@ -261,8 +235,6 @@ volumes:
   step2a_model_cache:
     driver: local
   step2b_model_cache:
-    driver: local
-  step2c_model_cache:
     driver: local
   step4_model_cache:
     driver: local

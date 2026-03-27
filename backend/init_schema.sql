@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS job_history (
 CREATE INDEX IF NOT EXISTS idx_job_history_job_id ON job_history(job_id);
 CREATE INDEX IF NOT EXISTS idx_job_history_status  ON job_history(status);
 
--- v2.13: Step2 분리를 위한 gate 플래그 컬럼 (기존 DB 마이그레이션용)
+-- v2.13: Step2 분리를 위한 gate 플래그 (legacy — v2.15에서 순차 구조로 불필요, 하위호환 유지)
 ALTER TABLE job_history ADD COLUMN IF NOT EXISTS step2a_done BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE job_history ADD COLUMN IF NOT EXISTS step2b_done BOOLEAN NOT NULL DEFAULT FALSE;
 
@@ -198,6 +198,11 @@ CREATE TABLE IF NOT EXISTS decision_result (
 CREATE INDEX IF NOT EXISTS idx_dr_job_id ON decision_result(job_id);
 CREATE INDEX IF NOT EXISTS idx_dr_score  ON decision_result(job_id, score DESC);
 
--- ─── Migration: detected_objects 컬럼 추가 (이미 존재하면 무시) ──────────────
+-- ─── Migration: detected_objects 컬럼 추가 (v2.14) ────────────────────────
 ALTER TABLE analysis_vision_context
     ADD COLUMN IF NOT EXISTS detected_objects TEXT;
+
+-- ─── Migration: 상황/감정/욕구 컬럼 추가 (v2.15) ────────────────────────────
+ALTER TABLE analysis_scene ADD COLUMN IF NOT EXISTS situation TEXT;
+ALTER TABLE analysis_scene ADD COLUMN IF NOT EXISTS emotion   TEXT;
+ALTER TABLE analysis_scene ADD COLUMN IF NOT EXISTS desire    TEXT;

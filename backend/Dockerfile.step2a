@@ -1,10 +1,11 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Dockerfile.step2a
-# step2-a 전용 컨테이너 — 비전 분석 (YOLO + VLM 고정 샘플링)
+# step2-a 전용 컨테이너 — 오디오 우선 분석
 #
-# v2.13: Step2 분리
-#   - YOLOv8l : 객체 탐지 / safe area 분석
-#   - VLM     : Gemini Flash API 또는 Qwen2-VL 씬 설명
+# v2.15: 음성 우선 알고리즘
+#   - faster-whisper large-v3 : 고정밀 한국어 STT (VAD 포함)
+#   - ko-sroberta-multitask    : 한국어 전용 SBERT 씬 분절
+#   - librosa                  : 침묵 구간 감지
 #
 # Run:
 #   docker-compose -f docker-compose.pipeline.yml up step2-a
@@ -13,19 +14,18 @@
 FROM python:3.11-slim
 
 # ── 시스템 패키지 ─────────────────────────────────────────────────────────────
+# ffmpeg: faster-whisper 오디오 디코딩 의존
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
+        ffmpeg \
         libpq-dev \
-        libgl1 \
-        libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# ── CPU-only PyTorch ──────────────────────────────────────────────────────────
+# ── CPU-only PyTorch (faster-whisper / sentence-transformers 의존) ────────────
 RUN pip install --no-cache-dir \
     torch==2.5.1 \
-    torchvision==0.20.1 \
     --index-url https://download.pytorch.org/whl/cpu
 
 # ── 나머지 의존성 ─────────────────────────────────────────────────────────────
