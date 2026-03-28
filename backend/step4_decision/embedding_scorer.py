@@ -19,7 +19,7 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
+MODEL_NAME = "jhgan/ko-sroberta-multitask"
 
 _model = None
 
