@@ -80,6 +80,7 @@ models/
 .claude/
 
 # ─── Private Pipeline Documentation (contains server IPs / credentials) ──────
+README.md
 PIPELINE_v2.md
 COMMANDS.md
 

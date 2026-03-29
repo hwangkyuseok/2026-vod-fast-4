@@ -4,6 +4,10 @@
 
 > **현재 버전: v2.15** | 음성 우선 분석 알고리즘 (Step2 A=오디오, B=비전)
 
+> **[SECURITY NOTE]** 이 파일은 공개용 예시 파일입니다.
+> 실제 운영 환경 정보(IP, 포트, 계정, 비밀번호, 경로)는 모두 placeholder로 대체되어 있습니다.
+> 실제 설정은 `README.md` (gitignore에 등록됨)에서 관리하세요.
+
 ---
 
 ## 버전 히스토리
@@ -72,12 +76,8 @@
 2026_VOD_FAST_4/
 ├── backend/
 │   ├── common/                    # 공통 유틸 (DB, RabbitMQ, config)
-│   │   ├── config.py              # 환경변수 설정
-│   │   ├── db.py                  # PostgreSQL 연결
-│   │   └── rabbitmq.py            # RabbitMQ 헬퍼
 │   ├── step1_preprocessing/       # ffmpeg 추출, scenedetect
-│   │   └── pipeline.py
-│   ├── step2_analysis/            # 분석 파이프라인
+│   ├── step2_analysis/
 │   │   ├── consumer_a.py          # Step2-A: 오디오 우선 (Whisper+SBERT)
 │   │   ├── consumer_b.py          # Step2-B: 비전 후속 (YOLO+Gemini)
 │   │   ├── audio_analysis.py      # librosa 묵음 구간 감지
@@ -85,30 +85,22 @@
 │   │   ├── vision_gemini.py       # Gemini 씬 서술 (상황/감정/욕구)
 │   │   └── vision_qwen.py         # Qwen2-VL 씬 서술 (fallback)
 │   ├── step3_persistence/         # 씬 × 광고 후보 페어 생성
-│   │   └── pipeline.py
 │   ├── step4_decision/            # 스코어링 → decision_result 저장
 │   │   ├── decision.py            # 메인 스코어링 파이프라인
 │   │   ├── pre_filter.py          # MiniLM pre-filter
-│   │   ├── cross_encoder_scorer.py # Cross-Encoder 유사도
-│   │   ├── embedding_scorer.py    # Sentence-Transformers 임베딩
-│   │   └── ad_narrative_gemini.py # Gemini 광고 narrative 생성
+│   │   ├── cross_encoder_scorer.py
+│   │   └── embedding_scorer.py
 │   ├── step5_api/                 # FastAPI REST 서버
-│   │   └── server.py
-│   ├── init_schema.sql            # DB DDL (전체 스키마 + 마이그레이션)
+│   ├── init_schema.sql            # DB DDL
 │   ├── init_db.py                 # DB 초기화
-│   ├── populate_ad_inventory.py   # 로컬 광고 파일 등록
-│   └── analyze_ad_narrative.py    # Gemini 광고 narrative 생성
+│   └── populate_ad_inventory.py   # 로컬 광고 파일 등록
 ├── frontend/                      # Next.js 14 App
-│   └── src/
-│       ├── app/
-│       │   ├── page.tsx           # 홈 (작업 제출 / 플레이어 접근)
-│       │   └── player/[jobId]/    # VOD 플레이어 페이지
-│       └── components/
-│           ├── VideoPlayer.tsx    # HTML5 비디오 + 오버레이 렌더링
-│           └── AdOverlay.tsx      # 단일 광고 오버레이 (영상/이미지)
-├── docker-compose.pipeline.yml    # 서버 Docker 파이프라인 (v2.15)
-├── COMMANDS.md                    # 서버 배포/운영 명령어
-├── PIPELINE_v2.md                 # 파이프라인 전체 문서
+├── docker-compose.pipeline.yml    # 서버 Docker 파이프라인
+├── README.md                      # 로컬 전용 (gitignore) — 실제 접속정보 포함
+├── README.example.md              # GitHub 공개용 — placeholder
+├── COMMANDS.md                    # 로컬 전용 (gitignore) — 실제 명령어
+├── PIPELINE_v2.md                 # 로컬 전용 (gitignore) — 실제 접속정보 포함
+├── PIPELINE_v2.example.md         # GitHub 공개용 — placeholder
 ├── start.ps1 / start.bat          # 로컬 서비스 시작
 ├── stop.ps1  / stop.bat           # 로컬 서비스 중지
 └── status.ps1 / status.bat        # 로컬 서비스 상태 확인
@@ -121,87 +113,71 @@
 ### 1. 사전 준비
 
 ```bash
-# Python 가상환경 생성 (프로젝트 루트)
 python -m venv .venv
 .venv\Scripts\activate
 
-# 단계별 패키지 설치
-pip install -r backend/requirements.step1.txt
-pip install -r backend/requirements.step2a.txt   # faster-whisper, sentence-transformers
-pip install -r backend/requirements.step2b.txt   # ultralytics, google-genai
-pip install -r backend/requirements.step3.txt
-pip install -r backend/requirements.step4.txt
-pip install -r backend/requirements.step5.txt
+pip install -r backend/requirements.step2a.txt
+pip install -r backend/requirements.step2b.txt
+# ... 각 스텝별 requirements 설치
 ```
 
-### 2. DB 스키마 초기화
+### 2. 환경변수 설정
+
+`.env` 파일을 생성하고 실제 값 입력 (README.md 참고):
+
+```env
+DB_HOST=<YOUR_DB_HOST>
+DB_PORT=<YOUR_DB_PORT>
+DB_NAME=<YOUR_DB_NAME>
+DB_USER=<YOUR_DB_USER>
+DB_PASSWORD=<YOUR_DB_PASSWORD>
+RABBITMQ_HOST=<YOUR_RABBITMQ_HOST>
+RABBITMQ_USER=<YOUR_RABBITMQ_USER>
+RABBITMQ_PASSWORD=<YOUR_RABBITMQ_PASSWORD>
+GEMINI_API_KEY=<YOUR_GEMINI_API_KEY>
+```
+
+### 3. DB 스키마 초기화
 
 ```bash
 cd backend
 python init_db.py
 ```
 
-### 3. 광고 인벤토리 등록
+### 4. 광고 인벤토리 등록
 
 ```bash
 python populate_ad_inventory.py
-python analyze_ad_narrative.py        # Gemini 광고 narrative 생성
-python analyze_ad_narrative.py --force  # 전체 재분석
+python analyze_ad_narrative.py
 ```
 
-### 4. 서비스 시작 (Windows — 권장)
+### 5. 서비스 시작 (Windows — 권장)
 
 ```powershell
-# 전체 시작 (Step1~5 + Frontend)
-.\start.ps1
-
-# Frontend 제외
-.\start.ps1 -SkipFrontend
-
-# 상태 확인
-.\status.ps1
-
-# 전체 중지
-.\stop.ps1
+.\start.ps1               # 전체 시작
+.\start.ps1 -SkipFrontend # Frontend 제외
+.\status.ps1              # 상태 확인
+.\stop.ps1                # 전체 중지
 ```
 
-### 5. 수동 시작 (터미널 7개)
+### 6. 수동 시작 (터미널 7개)
 
 ```bash
-# 터미널 1 — Step1 전처리
 cd backend && python -m step1_preprocessing.pipeline --consume
-
-# 터미널 2 — Step2-A 오디오 (Whisper + SBERT)
 cd backend && python -m step2_analysis.consumer_a
-
-# 터미널 3 — Step2-B 비전 (YOLO + Gemini)
 cd backend && python -m step2_analysis.consumer_b
-
-# 터미널 4 — Step3 영속성
 cd backend && python -m step3_persistence.pipeline
-
-# 터미널 5 — Step4 의사결정
 cd backend && python -m step4_decision.decision
-
-# 터미널 6 — Step5 API
 cd backend && python -m step5_api.server
-# → http://localhost:8000/docs
-
-# 터미널 7 — Frontend
 cd frontend && npm run dev
-# → http://localhost:3000
 ```
 
-### 6. 작업 제출
+### 7. 작업 제출
 
 ```bash
 curl -X POST http://localhost:8000/jobs \
   -H "Content-Type: application/json" \
   -d '{"video_path": "C:\\path\\to\\video.mp4"}'
-```
-
-```json
-{"job_id": "550e8400-...", "status": "pending"}
 ```
 
 ---
@@ -211,79 +187,29 @@ curl -X POST http://localhost:8000/jobs \
 | 테이블 | 설명 |
 |--------|------|
 | `job_history` | 작업 이력 및 상태 관리 |
-| `video_preprocessing_info` | 전처리 메타데이터 (FPS, 해상도, scene_cut_times) |
-| `analysis_audio` | librosa 묵음 구간 타임스탬프 |
+| `video_preprocessing_info` | 전처리 메타데이터 |
+| `analysis_audio` | librosa 묵음 구간 |
 | `analysis_transcript` | faster-whisper STT 세그먼트 |
-| `analysis_scene` | SBERT 씬 분절 결과 (situation, emotion, desire 포함) |
-| `analysis_vision_context` | 프레임별 YOLO 분석 결과 (safe area, 밀집도) |
-| `ad_inventory` | 광고 소재 목록 (target_narrative, ad_category) |
-| `decision_result` | 최종 광고 삽입 결정 (좌표, 점수, 씬 길이, 밀도) |
-
-### analysis_scene 주요 컬럼 (v2.15 신규)
-
-| 컬럼 | 설명 |
-|------|------|
-| `situation` | 씬 상황 (Gemini 분석) |
-| `emotion` | 씬 감정 (Gemini 분석) |
-| `desire` | 씬 욕구/니즈 (Gemini 분석) |
+| `analysis_scene` | SBERT 씬 분절 결과 (situation, emotion, desire) |
+| `analysis_vision_context` | 프레임별 YOLO 분석 결과 |
+| `ad_inventory` | 광고 소재 목록 |
+| `decision_result` | 최종 광고 삽입 결정 |
 
 ---
 
 ## 스코어링 기준 (v2.14)
 
-### Step4 처리 흐름
-
-```
-후보 페어 (씬 × 광고)
-    │
-    ▼ MiniLM pre-filter (임베딩 유사도 ≥ 0.35)
-    │
-    ▼ Cross-Encoder 정밀 스코어링
-    │
-    ▼ 슬라이딩 윈도우 최적 타임스탬프
-    │
-    ▼ decision_result 저장
-```
-
-### 점수 산출
-
 | 조건 | 점수 |
 |------|------|
-| narrative 유사도 스케일링 (0.40~1.0 → 0~+80) | 0 ~ +80 |
-| 최적 윈도우 내 객체 밀집도 ≤ 0.3 | +20 |
-| 최적 윈도우 내 침묵 구간 겹침 | +15 |
-| ad_category ↔ context_narrative 유사도 ≥ 0.35 | +10 |
-| 최적 윈도우 내 객체 밀집도 ≥ 0.7 | −40 |
-
----
-
-## 환경 변수 (.env)
-
-| 변수 | 기본값 | 설명 |
-|------|--------|------|
-| `DB_HOST` | `121.167.223.17` | PostgreSQL 호스트 |
-| `DB_PORT` | `5432` | PostgreSQL 포트 |
-| `DB_NAME` | `hv02` | DB 이름 |
-| `DB_USER` | `postgres01` | DB 사용자 |
-| `DB_PASSWORD` | `postgres01` | DB 비밀번호 |
-| `RABBITMQ_HOST` | `121.167.223.17` | RabbitMQ 호스트 |
-| `GEMINI_API_KEY` | — | Gemini API 키 (필수) |
-| `GEMINI_MODEL` | `gemini-2.0-flash` | Gemini 모델 |
-| `VLM_BACKEND` | `gemini` | VLM 백엔드 (`gemini` / `qwen`) |
-| `FASTER_WHISPER_MODEL` | `large-v3` | Whisper 모델 크기 |
-| `SBERT_MODEL` | `snunlp/KR-SBERT-V40K-klueNLI-augSTS` | SBERT 모델 |
+| narrative 유사도 스케일링 | 0 ~ +80 |
+| 객체 밀집도 ≤ 0.3 | +20 |
+| 침묵 구간 겹침 | +15 |
+| ad_category 유사도 ≥ 0.35 | +10 |
+| 객체 밀집도 ≥ 0.7 | −40 |
 
 ---
 
 ## 서버 배포
 
-GitHub main 브랜치에 push/merge 시 **자동 배포**됩니다.
-
-```
-GitHub main push
-    → GitHub Actions deploy.yml
-    → SCP 파일 전송 (121.167.223.17)
-    → docker-compose down → build → up -d
-```
-
-수동 배포는 `COMMANDS.md` 참조.
+GitHub main 브랜치 push/merge 시 GitHub Actions로 자동 배포됩니다.
+실제 서버 접속 정보 및 명령어는 `COMMANDS.md` (로컬 전용) 참조.
