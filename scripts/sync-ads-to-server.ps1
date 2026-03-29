@@ -1,6 +1,6 @@
 # sync-ads-to-server.ps1
 # ─────────────────────────────────────────────────────────────────────────────
-# 로컬 Windows의 광고 파일을 서버(121.167.223.17)로 전송한다.
+# 로컬 Windows의 광고 파일을 배포 서버로 전송한다.
 #
 # 사전 준비:
 #   1. SSH 키 또는 비밀번호 인증으로 서버 접근 가능해야 함
@@ -9,21 +9,31 @@
 #      설정 → 앱 → 선택적 기능 → OpenSSH 클라이언트
 #
 # 사용법:
-#   .\scripts\sync-ads-to-server.ps1
-#   .\scripts\sync-ads-to-server.ps1 -ServerUser root
-#   .\scripts\sync-ads-to-server.ps1 -SshKeyPath "C:\Users\user\.ssh\id_rsa"
+#   .\scripts\sync-ads-to-server.ps1 -ServerHost <IP> -LocalVideoDir <경로> -LocalBannerDir <경로>
+#   .\scripts\sync-ads-to-server.ps1 -ServerHost <IP> -ServerUser <계정> -SshKeyPath "C:\Users\<user>\.ssh\id_rsa"
+#   .\scripts\sync-ads-to-server.ps1 -ServerHost <IP> -LocalVideoDir <경로> -DryRun
 # ─────────────────────────────────────────────────────────────────────────────
 
 param(
-    [string]$ServerHost = "121.167.223.17",
-    [string]$ServerUser = "root",
-    [string]$SshKeyPath = "",          # 비어있으면 비밀번호 인증
-    [switch]$DryRun                    # 전송 없이 목록만 확인
+    [Parameter(Mandatory)][string]$ServerHost,         # 서버 IP 또는 hostname (필수)
+    [string]$ServerUser    = "root",
+    [string]$SshKeyPath    = "",                       # 비어있으면 비밀번호 인증
+    [string]$LocalVideoDir  = "",                      # 광고 영상 디렉토리 (미지정 시 아래 안내)
+    [string]$LocalBannerDir = "",                      # 광고 배너 디렉토리 (미지정 시 아래 안내)
+    [switch]$DryRun                                    # 전송 없이 목록만 확인
 )
 
-# ── 로컬 경로 ─────────────────────────────────────────────────────────────────
-$LocalVideoDir  = "D:\20.WORKSPACE\2026_VOD_FAST_3\TV_CF\output"
-$LocalBannerDir = "D:\20.WORKSPACE\2026_VOD_FAST_3\TV_CF\output_print"
+# ── 로컬 경로 미지정 시 안내 ──────────────────────────────────────────────────
+if (-not $LocalVideoDir) {
+    Write-Host "[ERROR] -LocalVideoDir 파라미터를 지정하세요." -ForegroundColor Red
+    Write-Host "  예) .\sync-ads-to-server.ps1 -ServerHost <IP> -LocalVideoDir 'C:\path\to\video'" -ForegroundColor Gray
+    exit 1
+}
+if (-not $LocalBannerDir) {
+    Write-Host "[ERROR] -LocalBannerDir 파라미터를 지정하세요." -ForegroundColor Red
+    Write-Host "  예) .\sync-ads-to-server.ps1 -ServerHost <IP> -LocalBannerDir 'C:\path\to\banner'" -ForegroundColor Gray
+    exit 1
+}
 
 # ── 서버 경로 ─────────────────────────────────────────────────────────────────
 $ServerVideoDir  = "/opt/vod-ad-overlay/video_ads"
