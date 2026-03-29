@@ -5,7 +5,7 @@
 > 실제 설정은 `PIPELINE_v2.md` (gitignore에 등록됨)에서 관리하세요.
 
 > **2026_VOD_FAST_4** | 비디오 문맥 분석 기반 동적 광고 오버레이 시스템
-> 현재 버전: **v2.15 (음성 우선 알고리즘 — Step2 A=오디오, B=비전)**
+> 현재 버전: **v2.15.1 (Step1 ContentDetector 제거 — 씬 분절은 Step2-A SBERT 담당)**
 
 ---
 
@@ -36,11 +36,13 @@
 ```
 [사전 준비] analyze_ad_narrative_gemini → ad_inventory.target_narrative, ad_category 채움
         |
-  Step 1: Preprocessing    ffmpeg 프레임/오디오 추출 + scenedetect 시각적 컷
+  Step 1: Preprocessing    ffmpeg 오디오/프레임 추출 + ffprobe 메타데이터
+                           ※ scenedetect 미사용 — 씬 분절은 Step2-A SBERT 담당 (v2.15.1)
         |
   Step 2-A: Audio          faster-whisper STT + SBERT 씬 분절 (컨테이너: step2-a)
+        |
   Step 2-B: Vision         씬별 YOLO 객체 탐지 + Gemini 상황/감정/욕구 (컨테이너: step2-b)
-                           ※ 2-A 완료 → QUEUE_STEP2B 발행 → 2-B 실행 (순차)
+                           ※ 2-A 완료 → QUEUE_STEP2B 발행 → 2-B 실행 (순차, Step2-C 없음)
         |
   Step 3: Candidates       analysis_scene × ad_inventory Cartesian product
         |
@@ -63,9 +65,9 @@
 | 광고 분석 | Gemini Flash (google-genai SDK) |
 | STT | faster-whisper large-v3 (로컬 CPU) |
 | 씬 분절 | ko-sroberta-multitask SBERT (코사인 유사도) |
-| 의미 임베딩 | sentence-transformers (MiniLM-L6) |
+| 의미 임베딩 | jhgan/ko-sroberta-multitask (Step4) |
 | 음성 분석 | librosa |
-| 씬 감지 | scenedetect>=0.6.4 |
+| ~~씬 감지~~ | ~~scenedetect~~ (v2.15.1 제거 — 미사용) |
 | 컨테이너 | Docker Compose v1 |
 
 ---
@@ -103,14 +105,13 @@ ssh <SSH_USER>@<YOUR_SERVER_IP>
 
 ## 3. Docker 배포 구조
 
-### 이미지 8개 / 서비스 8개 (v2.14 — 서비스별 완전 분리)
+### 이미지 7개 / 서비스 7개 (v2.15 — Step2-C 제거, 순차 A→B)
 
 | 이미지 | Dockerfile | 서비스 |
 |--------|-----------|--------|
 | `vod-step1:latest` | `Dockerfile.step1` | step1 (전처리) |
-| `vod-step2a:latest` | `Dockerfile.step2a` | step2-a (YOLO + VLM) |
-| `vod-step2b:latest` | `Dockerfile.step2b` | step2-b (침묵 + Whisper) |
-| `vod-step2c:latest` | `Dockerfile.step2c` | step2-c (Phase A gate) |
+| `vod-step2a:latest` | `Dockerfile.step2a` | step2-a (오디오: Whisper + SBERT) |
+| `vod-step2b:latest` | `Dockerfile.step2b` | step2-b (비전: YOLO + Gemini) |
 | `vod-step3:latest` | `Dockerfile.step3` | step3 (후보 페어 생성) |
 | `vod-step4:latest` | `Dockerfile.step4` | step4 (스코어링) |
 | `vod-step5:latest` | `Dockerfile.step5` | step5-api (FastAPI) |
@@ -138,18 +139,15 @@ scp backend/common/config.py     <SSH_USER>@<SERVER_IP>:/path/to/pipeline/common
 # Step 1 (step2a/b 동시 발행 + 플래그 리셋)
 scp backend/step1_preprocessing/pipeline.py <SSH_USER>@<SERVER_IP>:/path/to/pipeline/step1_preprocessing/pipeline.py
 
-# Step 2 분리 컨테이너 소스
+# Step 2 분리 컨테이너 소스 (v2.15: A=오디오, B=비전, C 제거)
 scp backend/step2_analysis/consumer_a.py         <SSH_USER>@<SERVER_IP>:/path/to/pipeline/step2_analysis/consumer_a.py
 scp backend/step2_analysis/consumer_b.py         <SSH_USER>@<SERVER_IP>:/path/to/pipeline/step2_analysis/consumer_b.py
-scp backend/step2_analysis/consumer_c.py         <SSH_USER>@<SERVER_IP>:/path/to/pipeline/step2_analysis/consumer_c.py
 
 # Step 2 Dockerfile + requirements
 scp backend/Dockerfile.step2a              <SSH_USER>@<SERVER_IP>:/path/to/pipeline/Dockerfile.step2a
 scp backend/Dockerfile.step2b              <SSH_USER>@<SERVER_IP>:/path/to/pipeline/Dockerfile.step2b
-scp backend/Dockerfile.step2c              <SSH_USER>@<SERVER_IP>:/path/to/pipeline/Dockerfile.step2c
 scp backend/requirements.step2a.txt       <SSH_USER>@<SERVER_IP>:/path/to/pipeline/requirements.step2a.txt
 scp backend/requirements.step2b.txt       <SSH_USER>@<SERVER_IP>:/path/to/pipeline/requirements.step2b.txt
-scp backend/requirements.step2c.txt       <SSH_USER>@<SERVER_IP>:/path/to/pipeline/requirements.step2c.txt
 
 # Step 4 (prefetch 최적화 + lazy import)
 scp backend/step4_decision/scoring.py    <SSH_USER>@<SERVER_IP>:/path/to/pipeline/step4_decision/scoring.py
@@ -176,10 +174,9 @@ docker-compose -f docker-compose.pipeline.yml up -d --force-recreate
 ### 4.3 서비스 로그 확인
 
 ```bash
-# Step 2 개별 컨테이너
+# Step 2 개별 컨테이너 (v2.15: A=오디오, B=비전)
 docker logs -f pipeline-step2-a-1
 docker logs -f pipeline-step2-b-1
-docker logs -f pipeline-step2-c-1
 
 # Step 4 / API
 docker logs -f pipeline-step4-1
@@ -218,15 +215,13 @@ docker-compose -f docker-compose.pipeline.yml run --rm step5-api python populate
 | 큐 이름 | 생산자 | 소비자 |
 |---------|--------|--------|
 | `vod.{prefix}.step1.preprocess` | FastAPI POST /jobs | Step 1 |
-| `vod.{prefix}.step2a.vision` | Step 1 (fan-out) | Step 2-A (YOLO + VLM) |
-| `vod.{prefix}.step2b.audio` | Step 1 (fan-out) | Step 2-B (침묵 + Whisper) |
-| `vod.{prefix}.step2.gate` | Step 2-A, Step 2-B | Step 2-C (Phase A gate) |
-| `vod.{prefix}.step3.persist` | Step 2-C | Step 3 |
+| `vod.{prefix}.step2a.audio` | Step 1 | Step 2-A (Whisper STT + SBERT 씬 분절) |
+| `vod.{prefix}.step2b.vision` | Step 2-A (완료 후) | Step 2-B (YOLO + Gemini) |
+| `vod.{prefix}.step3.persist` | Step 2-B | Step 3 |
 | `vod.{prefix}.step4.decide` | Step 3 | Step 4 |
 
-> Step 1은 QUEUE_STEP2A + QUEUE_STEP2B에 **동시 발행** (fan-out).
-> Step 2-A, Step 2-B는 각자 완료 후 step2a_done / step2b_done 플래그를 TRUE로 설정하고 QUEUE_STEP2_GATE에 발행.
-> Step 2-C는 두 플래그가 모두 TRUE일 때 Phase A 실행 (30초 폴링, 최대 30분 대기).
+> **v2.15 순차 흐름**: Step 1 → QUEUE_STEP2A → Step 2-A (오디오/STT/씬분절) → QUEUE_STEP2B → Step 2-B (비전/YOLO/Gemini) → Step 3 → Step 4
+> Step 2-C (fan-out gate) 제거됨.
 
 ---
 
@@ -237,25 +232,23 @@ docker-compose -f docker-compose.pipeline.yml run --rm step5-api python populate
 | Step 1 | `step1_preprocessing/pipeline.py` | vod-step1 |
 | Step 2-A | `step2_analysis/consumer_a.py` | vod-step2a |
 | Step 2-B | `step2_analysis/consumer_b.py` | vod-step2b |
-| Step 2-C | `step2_analysis/consumer_c.py` | vod-step2c |
 | Step 3 | `step3_persistence/pipeline.py` | vod-step3 |
-| Step 4 | `step4_decision/scoring.py` | vod-step4 |
+| Step 4 | `step4_decision/decision.py` | vod-step4 |
 | Step 5 | `step5_api/server.py` | vod-step5 |
 
-### Step 2 씬 세그멘테이션 (v2.11)
+### Step 2 아키텍처 (v2.15 — 음성 우선 순차 실행)
 
-`dialogue_segmenter.py` 주요 상수:
+**Step 2-A (consumer_a.py)**: 오디오 분석
+- faster-whisper large-v3 STT → `analysis_transcript`
+- ko-sroberta-multitask SBERT 씬 분절 → `analysis_scene`
+- librosa 묵음 감지 → `analysis_audio`
+- 완료 후 QUEUE_STEP2B 발행
 
-| 상수 | 값 | 설명 |
-|------|-----|------|
-| `BOUNDARY_THRESHOLD` | **0.75** | 씬 경계 판단 유사도 임계값 (v2.11 상향: 0.52→0.75) |
-| `MIN_WINDOW_SEC` | 30.0 | 씬 최소 길이(초) |
-| `MAX_WINDOW_SEC` | 240.0 | 씬 최대 길이(초) |
-| `CHUNK_DURATION_SEC` | 15.0 | 임베딩 청크 단위(초) |
-
-> **v2.11 버그 수정**: 짧은 씬 병합 로직에서 cascade 버그 수정.
-> 기존 로직은 짧은 씬이 연속될 때 모두 앞으로 합쳐져 전체 영상이 씬 1개로 병합되는 문제가 있었음.
-> 수정: 누적 씬이 `MIN_WINDOW_SEC` 충족 시 새 씬을 시작하도록 변경.
+**Step 2-B (consumer_b.py)**: 비전 분석
+- 씬별 K프레임 선택
+- YOLOv8l safe area, 객체 밀집도 → `analysis_vision_context`
+- Gemini Flash 상황/감정/욕구 → `analysis_scene.situation/emotion/desire`
+- 완료 후 QUEUE_STEP3 발행
 
 ### Step 3→Step 4 메시지 경량화 (v2.12)
 
@@ -354,20 +347,20 @@ GEMINI_MODEL=gemini-3-flash-preview
 
 > **형식 규칙**: `docker exec` 방식 사용. SSH 원격 명령어 방식 사용 금지.
 
-### Step 2 재처리 (Step 2-A + 2-B 동시 fan-out)
+### Step 2 재처리 (Step 2-A → Step 2-B 순차 실행)
 
 ```bash
 docker exec pipeline-step5-api-1 python3 -c "
 import sys
 sys.path.insert(0, '/app')
-from common import rabbitmq as mq, config, db
+from common import rabbitmq as mq, config
 JOB_ID = '<JOB_ID>'
-db.execute('UPDATE job_history SET step2a_done=FALSE, step2b_done=FALSE WHERE job_id=%s', (JOB_ID,))
 mq.publish(config.QUEUE_STEP2A, {'job_id': JOB_ID})
-mq.publish(config.QUEUE_STEP2B, {'job_id': JOB_ID})
-print('Published to', config.QUEUE_STEP2A, 'and', config.QUEUE_STEP2B)
+print('Published to', config.QUEUE_STEP2A)
 "
 ```
+
+> Step 2-A가 완료되면 자동으로 QUEUE_STEP2B에 발행함 (수동 2-B 투입 불필요)
 
 ### Step 3 재처리
 
@@ -406,10 +399,9 @@ db.execute(\"DELETE FROM analysis_scene WHERE job_id = %s\", (JOB_ID,))
 db.execute(\"DELETE FROM analysis_audio WHERE job_id = %s\", (JOB_ID,))
 db.execute(\"DELETE FROM analysis_transcript WHERE job_id = %s\", (JOB_ID,))
 db.execute(\"DELETE FROM analysis_vision_context WHERE job_id = %s\", (JOB_ID,))
-db.execute(\"UPDATE job_history SET status = 'preprocessing_done', step2a_done=FALSE, step2b_done=FALSE WHERE job_id = %s\", (JOB_ID,))
+db.execute(\"UPDATE job_history SET status = 'preprocessing_done' WHERE job_id = %s\", (JOB_ID,))
 mq.publish(config.QUEUE_STEP2A, {'job_id': JOB_ID})
-mq.publish(config.QUEUE_STEP2B, {'job_id': JOB_ID})
-print('Cleared and published to', config.QUEUE_STEP2A, 'and', config.QUEUE_STEP2B)
+print('Cleared and published to', config.QUEUE_STEP2A)
 "
 ```
 
@@ -469,17 +461,15 @@ FROM decision_result;
 
 | 모듈 | 주요 함수 |
 |------|---------|
-| `step1_preprocessing/pipeline.py` | `extract_audio`, `extract_frames`, `detect_scene_cuts`, `run` |
+| `step1_preprocessing/pipeline.py` | `extract_audio`, `extract_frames`, `get_video_metadata`, `run` (※ `detect_scene_cuts` 제거 v2.15.1) |
+| `step2_analysis/audio_analysis.py` | `detect_silence` |
 | `step2_analysis/vision_yolo.py` | `analyse_frames`, `_compute_safe_area` |
-| `step2_analysis/dialogue_segmenter.py` | `segment_video`, `find_context_start` |
-| `step2_analysis/vision_qwen.py` | `analyse_scene_context`, `analyse_frames` |
 | `step2_analysis/vision_gemini.py` | `analyse_scene_context`, `analyse_frames` |
-| `step2_analysis/consumer_a.py` | `run` (YOLO + VLM 고정샘플링, step2a_done 플래그) |
-| `step2_analysis/consumer_b.py` | `run` (침묵감지 + Whisper STT, step2b_done 플래그) |
-| `step2_analysis/consumer_c.py` | `_wait_for_gate`, `_generate_scene_contexts`, `run` |
+| `step2_analysis/vision_qwen.py` | `analyse_scene_context`, `analyse_frames` (fallback) |
+| `step2_analysis/consumer_a.py` | `run` (STT + SBERT 씬분절 + 묵음감지) |
+| `step2_analysis/consumer_b.py` | `run` (YOLO + Gemini 비전 분석) |
 | `step3_persistence/pipeline.py` | `build_candidates`, `run` |
 | `step4_decision/embedding_scorer.py` | `score_narrative_fit`, `batch_similarity_matrix`, `compute_similarity` |
-| `step4_decision/scoring.py` | `_compute_score`, `_find_best_overlay_window`, `_get_scene_frames_cached`, `_get_silence_overlap_cached`, `run` |
+| `step4_decision/decision.py` | `_compute_score`, `_find_best_overlay_window`, `run` |
 | `step5_api/server.py` | `submit_job`, `get_overlay_metadata`, `serve_source_video` |
-| `analyze_ad_narrative.py` | `_build_prompt`, `_analyse_ad`, `run` (Qwen 버전) |
 | `analyze_ad_narrative_gemini.py` | `_call_gemini`, `_analyse_ad`, `run` (Gemini 버전) |
