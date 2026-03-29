@@ -149,6 +149,7 @@ def analyse_scene_context(
     transcript_text: str,
     scene_start_sec: float,
     scene_end_sec: float,
+    detected_objects: str = "",
 ) -> str:
     """
     씬 전체의 멀티모달 컨텍스트를 분석하여 간결한 서술문을 반환한다. (v2.5 신규)
@@ -161,6 +162,7 @@ def analyse_scene_context(
         transcript_text:  씬 구간의 대사 텍스트 (한국어, Whisper 원문).
         scene_start_sec:  씬 시작 시각 (로그용).
         scene_end_sec:    씬 종료 시각 (로그용).
+        detected_objects: YOLO 탐지 객체 문자열 (vision_gemini.py와 시그니처 통일).
 
     Returns:
         광고 매칭용 서술문 문자열. 실패 시 "".
