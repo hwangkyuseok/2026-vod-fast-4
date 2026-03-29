@@ -23,6 +23,7 @@
 | v2.13 | Step2 3컨테이너 분리, Step4 쿼리 O(N)→O(1) 최적화 |
 | v2.14 | Step4 씬 단위 광고 매칭 (cross-encoder pre-filter) |
 | v2.15 | Step2 음성 우선 알고리즘 (A=오디오 STT/SBERT, B=비전 YOLO/Gemini, C 제거) |
+| v2.15.1 | Step1 ContentDetector(scenedetect) 주석 처리 — 씬 분절은 Step2-A SBERT가 담당 |
 
 ---
 
@@ -37,8 +38,10 @@
 [FastAPI] ──POST /jobs──► [RabbitMQ: vod.prod.step1.preprocess]
                                 │
                     ┌───────────▼────────────┐
-                    │  Step-1 Preprocessing  │  ffmpeg 프레임/오디오 추출
-                    │                        │  scenedetect 시각적 컷 감지
+                    │  Step-1 Preprocessing  │  ffmpeg 오디오 추출 (WAV 16kHz)
+                    │                        │  ffmpeg 프레임 추출 (1fps JPEG)
+                    │                        │  ffprobe 메타데이터 수집
+                    │                        │  ~~scenedetect~~ (미사용, 주석처리)
                     └───────────┬────────────┘
                                 │ [vod.prod.step2a.audio]
                     ┌───────────▼────────────┐
