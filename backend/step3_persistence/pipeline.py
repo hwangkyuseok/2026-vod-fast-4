@@ -30,7 +30,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from common import config, db as _db, rabbitmq as mq
 from common.logging_setup import setup_logging
 
-setup_logging("step3")
+# NOTE: setup_logging("step3") 은 모듈 레벨에서 호출하지 않음.
+# decision.py (step4)가 build_candidates()를 lazy import 할 때 이 모듈이 로드되며,
+# setup_logging이 root logger 핸들러를 교체해 step4 로그가 step3.log로 오염되는 문제 방지.
+# 소비자로 직접 실행될 때만 setup_logging 호출 (아래 __main__ 블록 참조).
 logger = logging.getLogger(__name__)
 
 
@@ -142,4 +145,5 @@ def _on_message(payload: dict) -> None:
 
 
 if __name__ == "__main__":
+    setup_logging("step3")
     mq.consume(config.QUEUE_STEP3, _on_message)
