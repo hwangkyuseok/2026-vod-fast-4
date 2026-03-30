@@ -17,8 +17,8 @@ Rate limit (무료 티어):
 변경사항 (v2.1):
   - 프롬프트: 상황/감정/욕구 3항목 형식으로 변경
   - analyse_scene_context(): detected_objects 파라미터 추가
-  - GEMINI_MODEL 기본값 → gemini-2.0-flash-preview
-    (서버 .env: GEMINI_MODEL=gemini-3-flash-preview 로 오버라이드)
+  - GEMINI_MODEL 기본값 → gemini-2.0-flash-preview → gemini-3-flash-preview
+    (서버 .env 와 동일하게 통일)
 """
 
 import base64
@@ -36,7 +36,7 @@ from common import config
 logger = logging.getLogger(__name__)
 
 # ── 모델 설정 ──────────────────────────────────────────────────────────────────
-_MODEL_NAME   = getattr(config, "GEMINI_MODEL", "gemini-2.0-flash-preview")
+_MODEL_NAME   = getattr(config, "GEMINI_MODEL", "gemini-3-flash-preview")
 _API_KEY      = getattr(config, "GEMINI_API_KEY", "")
 _RPM_INTERVAL = 4.0   # 15 RPM → 최소 4초 간격
 
