@@ -23,6 +23,7 @@ Returns per-frame dicts ready to INSERT into analysis_vision_context.
 """
 
 import logging
+import re
 from pathlib import Path
 from typing import Callable
 
@@ -225,9 +226,9 @@ def analyse_frames(
     sorted_paths = sorted(frame_paths)
     total = len(sorted_paths)
 
-    for idx, fpath in enumerate(sorted_paths):
+    for list_idx, fpath in enumerate(sorted_paths):
         # OPENCV_FRAME_INTERVAL: N프레임마다 1프레임 처리
-        if idx % OPENCV_FRAME_INTERVAL != 0:
+        if list_idx % OPENCV_FRAME_INTERVAL != 0:
             continue
 
         try:
@@ -274,9 +275,14 @@ def analyse_frames(
         cut = _is_scene_cut(prev_gray, gray)
         prev_gray = gray
 
+        # 파일명(frame_000042.jpg)에서 절대 frame_index 파싱
+        fname = Path(fpath).stem  # "frame_000042"
+        m = re.search(r"(\d+)$", fname)
+        abs_frame_index = int(m.group(1)) if m else list_idx
+
         row = {
-            "frame_index":    int(idx),
-            "timestamp_sec":  float(idx) / FRAME_EXTRACTION_FPS,  # absolute seconds
+            "frame_index":    abs_frame_index,
+            "timestamp_sec":  float(abs_frame_index) / FRAME_EXTRACTION_FPS,
             "is_scene_cut":   bool(cut),
             "detected_objects": detected_objects_str,
             **safe,
@@ -288,14 +294,14 @@ def analyse_frames(
                 on_batch(batch)
                 logger.info(
                     "YOLO: flushed batch of %d frames (up to %d / %d)",
-                    len(batch), idx + 1, total,
+                    len(batch), list_idx + 1, total,
                 )
                 batch = []
         else:
             results.append(row)
 
-        if idx % 60 == 0:
-            logger.info("YOLO: processed frame %d / %d", idx + 1, total)
+        if list_idx % 60 == 0:
+            logger.info("YOLO: processed frame %d / %d", list_idx + 1, total)
 
     # 마지막 잔여 배치 플러시
     if on_batch is not None:

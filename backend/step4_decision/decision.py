@@ -490,6 +490,8 @@ def run(job_id: str, candidates: list[dict]) -> None:
 
         # ── 1단계: MiniLM pre-filter (GitHub v2.14) ─────────────────────────
         # Cross-Encoder 전에 MiniLM 코사인유사도로 대량 후보를 빠르게 제거
+        # v2.15+: 씬당 상위 EMBED_TOP_K_PER_SCENE개만 Cross-Encoder에 넘김
+        EMBED_TOP_K_PER_SCENE = 30
         if candidates and embedding_scorer.is_available():
             unique_ctx = list(dict.fromkeys(
                 c.get("context_narrative") or "" for c in candidates
@@ -511,6 +513,8 @@ def run(job_id: str, candidates: list[dict]) -> None:
                         minilm_lookup[(ctx, tgt)] = float(sim_matrix[ctx_idx[ctx], tgt_idx[tgt]])
 
             before = len(candidates)
+
+            # 임계값 통과 후보 수집
             filtered = []
             for c in candidates:
                 ctx = c.get("context_narrative") or ""
@@ -519,10 +523,24 @@ def run(job_id: str, candidates: list[dict]) -> None:
                 passed, _ = pre_filter.passes(c, precomputed)
                 if passed:
                     filtered.append(c)
-            candidates = filtered
+
+            # 씬(context_narrative)별로 유사도 상위 EMBED_TOP_K_PER_SCENE개만 유지
+            from collections import defaultdict
+            scene_buckets: dict[str, list[tuple[float, dict]]] = defaultdict(list)
+            for c in filtered:
+                ctx = c.get("context_narrative") or ""
+                tgt = c.get("target_narrative") or ""
+                sim = minilm_lookup.get((ctx, tgt), 0.0)
+                scene_buckets[ctx].append((sim, c))
+
+            candidates = []
+            for ctx, items in scene_buckets.items():
+                items.sort(key=lambda x: x[0], reverse=True)
+                candidates.extend(c for _, c in items[:EMBED_TOP_K_PER_SCENE])
+
             logger.info(
-                "[%s] pre-filter: %d → %d candidates",
-                job_id, before, len(candidates),
+                "[%s] pre-filter: %d → %d (threshold) → %d (top-%d/scene)",
+                job_id, before, len(filtered), len(candidates), EMBED_TOP_K_PER_SCENE,
             )
 
         # ── 2단계: Cross-Encoder 배치 → Top-30 (GitHub v2.14) ──────────────
