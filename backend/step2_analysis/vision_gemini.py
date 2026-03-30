@@ -34,7 +34,7 @@ from common import config
 logger = logging.getLogger(__name__)
 
 # ── 모델 설정 ──────────────────────────────────────────────────────────────────
-_MODEL_NAME   = getattr(config, "GEMINI_MODEL", "gemini-2.0-flash")
+_MODEL_NAME   = getattr(config, "GEMINI_MODEL", "gemini-3-flash-preview")
 _API_KEY      = getattr(config, "GEMINI_API_KEY", "")
 _RPM_INTERVAL = 4.0   # 15 RPM → 최소 4초 간격
 
