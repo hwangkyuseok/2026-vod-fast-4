@@ -3,6 +3,12 @@ step4_training/labeling_gemini.py — Cross-Encoder 학습 데이터 라벨링
 ──────────────────────────────────────────────────────────────────────
 DB의 (씬, 광고) 쌍을 Gemini로 평가하여 cross_encoder_labels 테이블에 저장.
 
+v2.0 변경사항:
+  - FROM analysis_scene_final → analysis_scene (desire 있는 씬만)
+  - generate_scene_narrative.py 단계 불필요 (step2에서 context_narrative + desire 직접 생성)
+  - 프롬프트: 시각적 맥락 적합도 → 소비 욕구 연결성 평가로 변경
+    (target_narrative가 소비 욕구 형식으로 바뀌었으므로 평가 기준 통일)
+
 라벨 기준:
   >= 0.7        → positive   (Positive 정답 데이터)
   0.3 < x < 0.7 → ambiguous  (학습 제외, DB에는 저장)
@@ -47,13 +53,20 @@ LABEL_POSITIVE   = "positive"   # score >= 0.7
 LABEL_AMBIGUOUS  = "ambiguous"  # 0.3 < score < 0.7
 LABEL_NEGATIVE   = "negative"   # score <= 0.3
 
-# ── 라벨링 프롬프트 ────────────────────────────────────────────────────────────
+# ── 라벨링 프롬프트 (v2.0 — 소비 욕구 연결성 평가) ───────────────────────────
+# target_narrative가 "시청자의 소비 욕구" 형식으로 바뀌었으므로
+# 씬 desire와 광고 욕구의 연결성을 평가하도록 프롬프트 변경
 _PROMPT_TEMPLATE = (
-    "아래 두 텍스트를 읽고, 광고가 해당 영상 씬에 얼마나 잘 어울리는지 평가하세요.\n\n"
-    "【씬 설명】\n{context_narrative}\n\n"
-    "【광고 설명】\n{target_narrative}\n\n"
-    "위 씬에 이 광고를 삽입했을 때의 맥락 적합도를 0.0~1.0 사이의 숫자 하나로만 답하세요.\n"
-    "1.0 = 완벽하게 어울림, 0.0 = 전혀 어울리지 않음\n"
+    "아래는 TV 드라마 씬 분석과, 이 씬에 삽입될 광고의 소비 욕구 설명입니다.\n\n"
+    "【씬 분석 (상황/감정/욕구)】\n{context_narrative}\n\n"
+    "【광고가 시청자에게 자극하는 소비 욕구】\n{target_narrative}\n\n"
+    "씬을 본 시청자의 욕구(씬 분석의 '욕구' 항목)와 "
+    "광고가 자극하는 소비 욕구가 얼마나 자연스럽게 연결되는지 평가하세요.\n\n"
+    "평가 기준:\n"
+    "1.0 = 씬에서 생긴 욕구를 광고가 완벽히 충족 (예: 금융 씬 + 금융 광고)\n"
+    "0.5 = 간접적으로 연결 가능하지만 억지스러움\n"
+    "0.0 = 씬의 욕구와 광고 욕구가 전혀 관련 없음 (예: 액션 씬 + 요리 광고)\n\n"
+    "주의: 시각적 분위기 유사성이 아닌 소비 욕구의 연결성으로만 평가하세요.\n"
     "숫자만 답하세요. 설명 금지."
 )
 
@@ -131,7 +144,7 @@ def _assign_label(score: float) -> str:
 def _get_pairs(limit: int | None, force: bool, ads_per_scene: int | None = None) -> list[dict]:
     """
     라벨링할 (씬, 광고) 쌍 조회.
-    씬 narrative는 analysis_scene_final에서 읽음.
+    v2.0: analysis_scene_final → analysis_scene (desire + context_narrative 있는 씬만)
     force=False이면 아직 라벨링되지 않은 쌍만 반환.
     ads_per_scene이 지정되면 씬당 랜덤 샘플링.
     """
@@ -141,9 +154,10 @@ def _get_pairs(limit: int | None, force: bool, ads_per_scene: int | None = None)
                    s.context_narrative,
                    a.ad_id,
                    a.target_narrative
-              FROM analysis_scene_final s
+              FROM analysis_scene s
               JOIN ad_inventory a ON TRUE
              WHERE s.context_narrative IS NOT NULL AND s.context_narrative <> ''
+               AND s.desire            IS NOT NULL AND s.desire            <> ''
                AND a.target_narrative  IS NOT NULL AND a.target_narrative  <> ''
              ORDER BY s.id, a.ad_id
         """
@@ -153,9 +167,10 @@ def _get_pairs(limit: int | None, force: bool, ads_per_scene: int | None = None)
                    s.context_narrative,
                    a.ad_id,
                    a.target_narrative
-              FROM analysis_scene_final s
+              FROM analysis_scene s
               JOIN ad_inventory a ON TRUE
              WHERE s.context_narrative IS NOT NULL AND s.context_narrative <> ''
+               AND s.desire            IS NOT NULL AND s.desire            <> ''
                AND a.target_narrative  IS NOT NULL AND a.target_narrative  <> ''
                AND NOT EXISTS (
                    SELECT 1 FROM cross_encoder_labels c
