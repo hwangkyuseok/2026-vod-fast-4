@@ -87,6 +87,12 @@ services:
       - /app/HelloVision/data/storage:/app/storage
       - /app/HelloVision/data/logs:/app/storage/logs
       - step2a_model_cache:/models
+    deploy:
+      resources:
+        limits:
+          memory: 6G        # faster-whisper large-v3 (~3GB) + SBERT + Python 오버헤드
+        reservations:
+          memory: 1G
 
   # ── Step 2-B: 비전 후속 분석 (씬별 YOLO + Gemini → 상황/감정/욕구) ───────
   step2-b:
@@ -97,6 +103,7 @@ services:
     restart: unless-stopped
     depends_on:
       - step2-a
+    shm_size: '512m'          # PyTorch/YOLO 멀티프로세싱 shared memory
     environment:
       DB_HOST: "${DB_HOST}"
       DB_PORT: "${DB_PORT:-5432}"
@@ -112,6 +119,7 @@ services:
       VLM_BACKEND: "${VLM_BACKEND:-gemini}"
       GEMINI_API_KEY: "${GEMINI_API_KEY}"
       GEMINI_MODEL: "${GEMINI_MODEL:-gemini-2.5-flash-preview-04-17}"
+      GEMINI_RPM_INTERVAL: "${GEMINI_RPM_INTERVAL:-0.1}"
       SCENE_SAMPLE_FRAMES: "${SCENE_SAMPLE_FRAMES:-3}"
       TZ: "${TZ:-Asia/Seoul}"
       HF_HOME: "/models"
@@ -120,6 +128,13 @@ services:
       - /app/HelloVision/data/storage:/app/storage
       - /app/HelloVision/data/logs:/app/storage/logs
       - step2b_model_cache:/models
+      - step2b_yolo_cache:/root/.config/Ultralytics  # YOLO 모델 캐시 (재다운로드 방지)
+    deploy:
+      resources:
+        limits:
+          memory: 4G        # yolov8l (~1GB) + 프레임 버퍼 + Python 오버헤드
+        reservations:
+          memory: 1G
 
   # ── Step 3: 후보 페어 생성 (analysis_scene × ad_inventory) ────────────────
   step3:
@@ -175,6 +190,12 @@ services:
       - /app/HelloVision/data/storage:/app/storage
       - /app/HelloVision/data/logs:/app/storage/logs
       - step4_model_cache:/models
+    deploy:
+      resources:
+        limits:
+          memory: 2G        # SBERT cross-encoder (~400MB) + 스코어링 오버헤드
+        reservations:
+          memory: 512M
 
   # ── Step 5: FastAPI 서버 ──────────────────────────────────────────────────
   step5-api:
@@ -235,6 +256,8 @@ volumes:
   step2a_model_cache:
     driver: local
   step2b_model_cache:
+    driver: local
+  step2b_yolo_cache:           # YOLO 모델 캐시 (~/.config/Ultralytics)
     driver: local
   step4_model_cache:
     driver: local
