@@ -66,7 +66,9 @@ SCORE_SEMANTIC_MAX     = 80    # similarity=1.0 → +80점
 MIN_SCORE_TO_KEEP      = 20    # 이 미만 점수 후보 제거 → 맥락 부적합 광고 배제
 
 # 개선 5: 오버레이 밀도 제어
-MIN_AD_INTERVAL_SEC    = 120   # 광고 사이 최소 간격 (2분)
+# MIN_AD_INTERVAL_SEC: 개선 3 — 영상 길이 기반 동적 계산 (_pick_best_and_deduplicate 참조)
+# formula: 60 * (int(duration_sec // 1800) + 1), capped at 300s
+# 10min→60s, 30min→120s, 60min→180s, 90min→240s, 120min→300s
 MAX_ADS_PER_HOUR       = 10    # 시간당 최대 광고 수
 
 # ── Brand Safety (scoring.py v3.1) ───────────────────────────────────────────
@@ -434,12 +436,13 @@ def _score_candidate(
 
 # ── Dedup (GitHub v2.14: 시간 겹침만 제거) ──────────────────────────────────
 
-def _pick_best_and_deduplicate(scored: list[dict]) -> list[dict]:
+def _pick_best_and_deduplicate(scored: list[dict], duration_sec: float = 0.0) -> list[dict]:
     """
     1. Per unique scene_start_sec: keep only the highest-scoring ad.
     2. Sort by overlay_start_time_sec, then remove time-overlapping windows
        (greedy: keep the higher-scoring one when two overlap).
-    3. 개선 5: 최소 광고 간격(MIN_AD_INTERVAL_SEC) 및 시간당 최대 광고 수(MAX_ADS_PER_HOUR) 적용.
+    3. 개선 5: 최소 광고 간격(동적) 및 시간당 최대 광고 수(MAX_ADS_PER_HOUR) 적용.
+       개선 3: 최소 간격은 영상 길이 기반 동적 계산.
     """
     # Step 1: 씬별 최고점 광고 1개
     best: dict[float, dict] = {}
@@ -469,6 +472,16 @@ def _pick_best_and_deduplicate(scored: list[dict]) -> list[dict]:
             deduped[-1] = c
 
     # Step 3: 개선 5 — 최소 간격 + 시간당 최대 광고 수 제어
+    # 개선 3: 영상 길이 기반 동적 최소 광고 간격
+    if duration_sec > 0:
+        dynamic_interval = min(300, max(60, 60 * (int(duration_sec // 1800) + 1)))
+    else:
+        dynamic_interval = 120  # duration 미확인 시 기본값 2분
+    logger.info(
+        "[INTERVAL] duration_sec=%.1f → min_ad_interval=%ds",
+        duration_sec, dynamic_interval,
+    )
+
     result: list[dict] = []
     for c in deduped:
         start = c["overlay_start_time_sec"]
@@ -476,7 +489,7 @@ def _pick_best_and_deduplicate(scored: list[dict]) -> list[dict]:
         # 최소 간격 체크
         if result:
             prev_start = result[-1]["overlay_start_time_sec"]
-            if start - prev_start < MIN_AD_INTERVAL_SEC:
+            if start - prev_start < dynamic_interval:
                 # 간격 미달 시 점수가 높은 쪽 유지
                 if c["score"] > result[-1]["score"]:
                     result[-1] = c
@@ -538,10 +551,12 @@ def _insert_decision_results(job_id: str, results: list[dict]) -> None:
 
 # ── 메인 파이프라인 ──────────────────────────────────────────────────────────
 
-def run(job_id: str, candidates: list[dict]) -> None:
+def run(job_id: str, candidates: list[dict], duration_sec: float = 0.0) -> None:
     _update_job_status(job_id, "deciding")
     try:
         sim_lookup: dict[tuple[str, str], float] = {}
+        ctx_to_desire: dict[str, str] = {}    # 개선 4: 씬 desire 매핑
+        desire_lookup: dict[tuple[str, str], float] = {}  # 개선 4: desire × target 유사도
 
         # ── 1단계: MiniLM pre-filter (GitHub v2.14) ─────────────────────────
         # Cross-Encoder 전에 MiniLM 코사인유사도로 대량 후보를 빠르게 제거
@@ -566,6 +581,32 @@ def run(job_id: str, candidates: list[dict]) -> None:
                     tgt = c.get("target_narrative") or ""
                     if ctx and tgt:
                         minilm_lookup[(ctx, tgt)] = float(sim_matrix[ctx_idx[ctx], tgt_idx[tgt]])
+
+                # 개선 4: desire 임베딩 블렌딩 (씬 desire ↔ target_narrative)
+                for c in candidates:
+                    ctx = c.get("context_narrative") or ""
+                    desire = c.get("desire") or ""
+                    if ctx and desire:
+                        ctx_to_desire[ctx] = desire
+                unique_desire = list(dict.fromkeys(v for v in ctx_to_desire.values() if v))
+                if unique_desire:
+                    desire_sim_matrix = embedding_scorer.batch_similarity_matrix(unique_desire, unique_tgt)
+                    desire_idx_map = {t: i for i, t in enumerate(unique_desire)}
+                    for c in candidates:
+                        ctx = c.get("context_narrative") or ""
+                        tgt = c.get("target_narrative") or ""
+                        if not (ctx and tgt):
+                            continue
+                        desire = ctx_to_desire.get(ctx, "")
+                        if desire and desire in desire_idx_map and tgt in tgt_idx:
+                            ctx_sim = minilm_lookup.get((ctx, tgt), 0.0)
+                            d_sim = float(desire_sim_matrix[desire_idx_map[desire], tgt_idx[tgt]])
+                            minilm_lookup[(ctx, tgt)] = 0.5 * ctx_sim + 0.5 * d_sim
+                            desire_lookup[(ctx, tgt)] = d_sim
+                    logger.info(
+                        "[%s] Desire blending: %d desires × %d ads blended into minilm_lookup",
+                        job_id, len(unique_desire), len(unique_tgt),
+                    )
 
             before = len(candidates)
 
@@ -613,6 +654,18 @@ def run(job_id: str, candidates: list[dict]) -> None:
                     # Cross-Encoder 배치 추론 (정밀 평가)
                     scores = cross_encoder_scorer.batch_score(unique_pairs)
                     sim_lookup = dict(zip(unique_pairs, scores))
+                    # 개선 4: CE + desire 유사도 블렌딩
+                    if desire_lookup:
+                        blended_count = 0
+                        for key, ce_score in list(sim_lookup.items()):
+                            d_sim = desire_lookup.get(key)
+                            if d_sim is not None:
+                                sim_lookup[key] = 0.5 * ce_score + 0.5 * d_sim
+                                blended_count += 1
+                        logger.info(
+                            "[%s] CE + desire blending: %d/%d pairs blended",
+                            job_id, blended_count, len(sim_lookup),
+                        )
                     logger.info(
                         "[%s] Cross-Encoder batch: %d pair(s) scored.",
                         job_id, len(sim_lookup),
@@ -721,7 +774,7 @@ def run(job_id: str, candidates: list[dict]) -> None:
             })
 
         # ── Dedup + INSERT (GitHub v2.14: 시간 겹침만 제거) ─────────────────
-        best = _pick_best_and_deduplicate(scored_candidates)
+        best = _pick_best_and_deduplicate(scored_candidates, duration_sec=duration_sec)
         _insert_decision_results(job_id, best)
         _update_job_status(job_id, "complete")
         logger.info("[%s] Step-4 complete — %d overlays decided.", job_id, len(best))
@@ -738,7 +791,13 @@ def _on_message(payload: dict) -> None:
     # step4 log handler가 step3.log로 교체되는 문제 방지
     from step3_persistence.pipeline import build_candidates
     candidates = build_candidates(job_id)
-    run(job_id, candidates)
+    # 개선 3: 영상 길이 조회 → 동적 최소 광고 간격 계산
+    row = _db.fetchone(
+        "SELECT duration_sec FROM video_preprocessing_info WHERE job_id = %s",
+        (job_id,),
+    )
+    duration_sec = float(row["duration_sec"]) if row and row.get("duration_sec") else 0.0
+    run(job_id, candidates, duration_sec=duration_sec)
 
 
 if __name__ == "__main__":

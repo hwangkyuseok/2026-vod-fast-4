@@ -57,6 +57,7 @@ def _get_scene_intervals(job_id: str) -> list[dict]:
                s.scene_end_sec,
                (s.scene_end_sec - s.scene_start_sec) AS scene_duration,
                s.context_narrative,
+               s.desire,
                COALESCE((
                    SELECT string_agg(DISTINCT v.detected_objects, ', ')
                      FROM analysis_vision_context v
@@ -90,12 +91,13 @@ def build_candidates(job_id: str) -> list[dict]:
     Return a list of candidate dicts, each representing one
     (scene × ad) pair to be scored.
 
-    Schema (v2.10):
+    Schema (v2.11):
     {
         "scene_start_sec":   float,
         "scene_end_sec":     float,
         "scene_duration":    float,
         "context_narrative": str,
+        "desire":            str,        -- 씬 소비 욕구 (개선 4: desire 임베딩 블렌딩용)
         "ad_id":             str,
         "ad_name":           str,
         "ad_type":           str,
@@ -124,6 +126,7 @@ def build_candidates(job_id: str) -> list[dict]:
                 "scene_end_sec":     float(scene["scene_end_sec"]),
                 "scene_duration":    float(scene["scene_duration"]),
                 "context_narrative": scene.get("context_narrative") or "",
+                "desire":            scene.get("desire") or "",
                 "detected_objects":  scene.get("detected_objects") or "",
                 "ad_id":             ad["ad_id"],
                 "ad_name":           ad.get("ad_name") or "",
