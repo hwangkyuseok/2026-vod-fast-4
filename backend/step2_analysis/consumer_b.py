@@ -219,7 +219,7 @@ def run(job_id: str) -> None:
                 yolo_rows.extend(batch)
 
             if selected_frames:
-                _yolo.analyse_frames(selected_frames, on_batch=_collect_yolo)
+                _yolo.analyse_frames(selected_frames, on_batch=_collect_yolo, interval=1)
                 _insert_vision_batch(job_id, yolo_rows)
 
             # 탐지 객체 집계 (중복 제거)

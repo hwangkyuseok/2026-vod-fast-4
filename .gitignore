@@ -53,8 +53,16 @@ desktop.ini
 # ─── Storage / Data ───────────────────────────────────────────────────────────
 storage/
 vod/
+ads/
 logs/
 *.log
+
+# ─── Local Scripts & Diagrams ─────────────────────────────────────────────────
+analyze_ad_narrative.sh
+start.sh
+status.sh
+stop.sh
+step4_pipeline_diagram.html
 
 # ─── Media Files ──────────────────────────────────────────────────────────────
 *.mp4

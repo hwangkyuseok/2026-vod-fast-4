@@ -196,6 +196,7 @@ def analyse_frames(
     frame_paths: list[str],
     on_batch: Callable[[list[dict]], None] | None = None,
     batch_size: int = YOLO_BATCH_SIZE,
+    interval: int = OPENCV_FRAME_INTERVAL,
 ) -> list[dict]:
     """
     YOLOv8l 로 프레임 리스트를 분석한다.
@@ -227,8 +228,8 @@ def analyse_frames(
     total = len(sorted_paths)
 
     for list_idx, fpath in enumerate(sorted_paths):
-        # OPENCV_FRAME_INTERVAL: N프레임마다 1프레임 처리
-        if list_idx % OPENCV_FRAME_INTERVAL != 0:
+        # interval: N프레임마다 1프레임 처리
+        if list_idx % interval != 0:
             continue
 
         try:

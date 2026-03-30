@@ -55,13 +55,19 @@ logger = logging.getLogger(__name__)
 
 # ── 스코어링 상수 ────────────────────────────────────────────────────────────
 SCORE_SILENCE_BONUS    = 8     # 침묵 보너스 (v3.1: 15→8, density 차이 뒤집지 않게)
+SCORE_GAP_BONUS        = 5     # 개선 2: 발화 gap ≥ 3초 보너스
+SCORE_SCENE_OPEN_BONUS = 5     # 개선 2: 씬 시작 후 2~5초 구간 보너스 (장면전환 안착)
 SCORE_CATEGORY_BONUS   = 10    # ad_category ↔ context_narrative 유사도 ≥ 0.35
 CATEGORY_SIM_THRESHOLD = 0.35  # 카테고리 보너스 적용 최소 유사도
 
 SCORE_SEMANTIC_MAX     = 80    # similarity=1.0 → +80점
-SCORE_SEMANTIC_MIN_SIM = 0.40  # threshold 통과 후 스케일링 하한
+# SCORE_SEMANTIC_MIN_SIM: 씬 유형별 차등 적용 → pre_filter.get_threshold() 위임 (개선 3)
 
 MIN_SCORE_TO_KEEP      = 20    # 이 미만 점수 후보 제거 → 맥락 부적합 광고 배제
+
+# 개선 5: 오버레이 밀도 제어
+MIN_AD_INTERVAL_SEC    = 120   # 광고 사이 최소 간격 (2분)
+MAX_ADS_PER_HOUR       = 10    # 시간당 최대 광고 수
 
 # ── Brand Safety (scoring.py v3.1) ───────────────────────────────────────────
 UNSAFE_KEYWORDS: list[str] = [
@@ -277,9 +283,11 @@ def _score_candidate(
 
     # ── 루프 밖 고정 점수 사전 계산 ─────────────────────────────────────────
     # semantic 점수 (0~+80) — 윈도우 위치와 무관
+    # 개선 3 일관성: pre_filter와 동일한 씬 유형별 threshold를 스케일링 하한으로 사용
+    semantic_min_sim = pre_filter.get_threshold(candidate)
     base_semantic = 0
-    if similarity >= SCORE_SEMANTIC_MIN_SIM:
-        scaled = (similarity - SCORE_SEMANTIC_MIN_SIM) / (1.0 - SCORE_SEMANTIC_MIN_SIM)
+    if similarity >= semantic_min_sim:
+        scaled = (similarity - semantic_min_sim) / (1.0 - semantic_min_sim)
         base_semantic = int(scaled * SCORE_SEMANTIC_MAX)
 
     # category 보너스 — 윈도우 위치와 무관
@@ -369,6 +377,26 @@ def _score_candidate(
         if has_silence:
             total += SCORE_SILENCE_BONUS
 
+        # 개선 2: 발화 gap ≥ 3초 보너스 (+5)
+        # 침묵 구간은 아니지만 대사 밀도가 낮은 구간에도 광고 배치 적합
+        overlapping_tr = [
+            tr for tr in scene_transcripts
+            if float(tr["end_sec"]) > t and float(tr["start_sec"]) < window_end
+        ]
+        if overlapping_tr:
+            prev_end = t
+            for tr in overlapping_tr:
+                if float(tr["start_sec"]) - prev_end >= 3.0:
+                    total += SCORE_GAP_BONUS
+                    break
+                prev_end = max(prev_end, float(tr["end_sec"]))
+
+        # 개선 2: 씬 시작 후 2~5초 구간 보너스 (+5)
+        # 장면전환 직후 시청자 집중도가 안착되는 구간
+        offset_in_scene = t - scene_start
+        if 2.0 <= offset_in_scene <= 5.0:
+            total += SCORE_SCENE_OPEN_BONUS
+
         # 최고점 갱신
         if total > best_score:
             best_score = total
@@ -411,6 +439,7 @@ def _pick_best_and_deduplicate(scored: list[dict]) -> list[dict]:
     1. Per unique scene_start_sec: keep only the highest-scoring ad.
     2. Sort by overlay_start_time_sec, then remove time-overlapping windows
        (greedy: keep the higher-scoring one when two overlap).
+    3. 개선 5: 최소 광고 간격(MIN_AD_INTERVAL_SEC) 및 시간당 최대 광고 수(MAX_ADS_PER_HOUR) 적용.
     """
     # Step 1: 씬별 최고점 광고 1개
     best: dict[float, dict] = {}
@@ -425,19 +454,45 @@ def _pick_best_and_deduplicate(scored: list[dict]) -> list[dict]:
     )
 
     # Step 2: 오버레이 시간 겹침 제거
-    result: list[dict] = []
+    deduped: list[dict] = []
     for c in candidates:
         start = c["overlay_start_time_sec"]
         end   = start + c["overlay_duration_sec"]
-        if not result:
-            result.append(c)
+        if not deduped:
+            deduped.append(c)
             continue
-        prev     = result[-1]
+        prev     = deduped[-1]
         prev_end = prev["overlay_start_time_sec"] + prev["overlay_duration_sec"]
         if start >= prev_end:
-            result.append(c)
+            deduped.append(c)
         elif c["score"] > prev["score"]:
-            result[-1] = c
+            deduped[-1] = c
+
+    # Step 3: 개선 5 — 최소 간격 + 시간당 최대 광고 수 제어
+    result: list[dict] = []
+    for c in deduped:
+        start = c["overlay_start_time_sec"]
+
+        # 최소 간격 체크
+        if result:
+            prev_start = result[-1]["overlay_start_time_sec"]
+            if start - prev_start < MIN_AD_INTERVAL_SEC:
+                # 간격 미달 시 점수가 높은 쪽 유지
+                if c["score"] > result[-1]["score"]:
+                    result[-1] = c
+                continue
+
+        # 시간당 최대 광고 수 체크
+        hour_bucket = int(start // 3600)
+        ads_in_hour = sum(1 for r in result if int(r["overlay_start_time_sec"] // 3600) == hour_bucket)
+        if ads_in_hour >= MAX_ADS_PER_HOUR:
+            logger.info(
+                "[DENSITY] skip ad=%.1fs — hour %d already has %d ads (max %d)",
+                start, hour_bucket, ads_in_hour, MAX_ADS_PER_HOUR,
+            )
+            continue
+
+        result.append(c)
 
     return result
 
@@ -543,8 +598,8 @@ def run(job_id: str, candidates: list[dict]) -> None:
                 job_id, before, len(filtered), len(candidates), EMBED_TOP_K_PER_SCENE,
             )
 
-        # ── 2단계: Cross-Encoder 배치 → Top-30 (GitHub v2.14) ──────────────
-        TOP_K_CANDIDATES = 30
+        # ── 2단계: Cross-Encoder 배치 → 씬별 Top-3 (Bug 2 fix: 전역 Top-30 제거) ──
+        CE_TOP_K_PER_SCENE = 3
         if candidates:
             pairs = [
                 (c.get("context_narrative") or "", c.get("target_narrative") or "")
@@ -562,18 +617,26 @@ def run(job_id: str, candidates: list[dict]) -> None:
                         "[%s] Cross-Encoder batch: %d pair(s) scored.",
                         job_id, len(sim_lookup),
                     )
-                    # CE 점수 기준 상위 TOP_K만 선택
+                    # Bug 2 fix: 전역 Top-K 대신 씬별 Top-CE_TOP_K_PER_SCENE 선택
+                    # 기존 전역 정렬 → 동일 씬 독점 → 실질 1~3씬 문제 해결
                     scored_list = [
                         (c, sim_lookup.get(
                             (c.get("context_narrative") or "", c.get("target_narrative") or ""), 0.0
                         ))
                         for c in candidates
                     ]
-                    scored_list.sort(key=lambda x: x[1], reverse=True)
-                    candidates = [c for c, _ in scored_list[:TOP_K_CANDIDATES]]
+                    from collections import defaultdict as _dd
+                    ce_buckets: dict[str, list] = _dd(list)
+                    for c, sim in scored_list:
+                        ce_buckets[c.get("context_narrative") or ""].append((sim, c))
+                    candidates = []
+                    for items in ce_buckets.values():
+                        items.sort(key=lambda x: x[0], reverse=True)
+                        candidates.extend(c for _, c in items[:CE_TOP_K_PER_SCENE])
                     logger.info(
-                        "[%s] Top-%d selected by Cross-Encoder (from %d).",
-                        job_id, len(candidates), len(scored_list),
+                        "[%s] CE Top-%d/scene: %d씬 → %d 후보 (from %d).",
+                        job_id, CE_TOP_K_PER_SCENE, len(ce_buckets),
+                        len(candidates), len(scored_list),
                     )
                 elif not sim_lookup:
                     # CE 없으면 MiniLM fallback
