@@ -114,7 +114,7 @@ SBERT_MODEL               = os.getenv("SBERT_MODEL",            "jhgan/ko-srober
 SBERT_SILENCE_GAP_SEC     = float(os.getenv("SBERT_SILENCE_GAP_SEC", "4.0"))
 SBERT_SIM_THRESHOLD       = float(os.getenv("SBERT_SIM_THRESHOLD",   "0.3"))
 # Gemini 씬별 프레임 샘플 수 (Step2-B 전용)
-SCENE_SAMPLE_FRAMES       = int(os.getenv("SCENE_SAMPLE_FRAMES", "3"))
+SCENE_SAMPLE_FRAMES       = int(os.getenv("SCENE_SAMPLE_FRAMES", "5"))  # 개선 6: 3→5 (safe_area/density 정밀도 향상)
 
 # ─── Gemini Flash API ────────────────────────────────────────────────────────
 # VLM_BACKEND: "qwen" (로컬 Qwen2-VL) | "gemini" (Google Gemini Flash API)

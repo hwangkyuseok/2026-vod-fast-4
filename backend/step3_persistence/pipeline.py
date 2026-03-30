@@ -45,17 +45,30 @@ def _update_job_status(job_id: str, status: str, error: str | None = None) -> No
 
 
 def _get_scene_intervals(job_id: str) -> list[dict]:
-    """analysis_scene 테이블에서 씬 목록을 조회한다."""
+    """
+    analysis_scene 테이블에서 씬 목록을 조회한다.
+    씬 구간 내 analysis_vision_context의 detected_objects를 집계해 함께 반환.
+    (개선 3: pre_filter 임계값 씬 유형별 차등에 사용)
+    """
     return _db.fetchall(
         """
-        SELECT id,
-               scene_start_sec,
-               scene_end_sec,
-               (scene_end_sec - scene_start_sec)  AS scene_duration,
-               context_narrative
-          FROM analysis_scene
-         WHERE job_id = %s
-         ORDER BY scene_start_sec
+        SELECT s.id,
+               s.scene_start_sec,
+               s.scene_end_sec,
+               (s.scene_end_sec - s.scene_start_sec) AS scene_duration,
+               s.context_narrative,
+               COALESCE((
+                   SELECT string_agg(DISTINCT v.detected_objects, ', ')
+                     FROM analysis_vision_context v
+                    WHERE v.job_id = s.job_id
+                      AND v.timestamp_sec >= s.scene_start_sec
+                      AND v.timestamp_sec <= s.scene_end_sec
+                      AND v.detected_objects IS NOT NULL
+                      AND v.detected_objects <> ''
+               ), '') AS detected_objects
+          FROM analysis_scene s
+         WHERE s.job_id = %s
+         ORDER BY s.scene_start_sec
         """,
         (job_id,),
     )
@@ -111,6 +124,7 @@ def build_candidates(job_id: str) -> list[dict]:
                 "scene_end_sec":     float(scene["scene_end_sec"]),
                 "scene_duration":    float(scene["scene_duration"]),
                 "context_narrative": scene.get("context_narrative") or "",
+                "detected_objects":  scene.get("detected_objects") or "",
                 "ad_id":             ad["ad_id"],
                 "ad_name":           ad.get("ad_name") or "",
                 "ad_type":           ad["ad_type"],
