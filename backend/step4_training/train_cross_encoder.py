@@ -4,11 +4,6 @@ step4_training/train_cross_encoder.py — Cross-Encoder Fine-tuning
 cross_encoder_labels 테이블의 positive/negative 라벨 데이터로
 ms-marco-MiniLM-L-12-v2를 Fine-tuning하여 로컬에 저장.
 
-v2.0 변경사항:
-  - train/test 분리를 pair 단위 랜덤 → scene_id 단위로 변경
-    (동일 씬이 train/test 양쪽에 들어가는 데이터 누수 방지)
-  - 평가 지표: CERerankingEvaluator (씬별 positive 랭킹 정확도)
-
 실행:
     python -m step4_training.train_cross_encoder [--epochs N] [--output-dir PATH]
 
@@ -36,10 +31,7 @@ DEFAULT_OUTPUT_DIR = "/app/storage/models/cross_encoder"
 
 def _load_train_data(neg_ratio: int = 3, test_ratio: float = 0.2) -> tuple[list[dict], list[dict]]:
     """
-    positive/negative 라벨 데이터를 씬(scene_id) 단위로 train/test 분리.
-
-    v2.0: pair 단위 랜덤 분리 → scene_id 단위 분리로 변경.
-    동일 씬이 train/test 양쪽에 들어가는 데이터 누수(leakage)를 방지.
+    positive/negative 라벨 데이터를 train/test로 분리하여 반환.
 
     neg_ratio  : positive 1건당 negative 최대 비율 (기본 1:3)
     test_ratio : test set 비율 (기본 0.2 = 20%)
@@ -48,7 +40,49 @@ def _load_train_data(neg_ratio: int = 3, test_ratio: float = 0.2) -> tuple[list[
         (train_rows, test_rows)
     """
     import random
+
+    # ────────────────────────────────────────────────────────────────────────
+    # [기존 코드 — pair 단위 랜덤 분리]
+    # 문제: 동일 scene_id가 train/test 양쪽에 들어가는 데이터 누수(leakage) 발생 가능
+    #
+    # import math
+    #
+    # positives = _db.fetchall(
+    #     "SELECT scene_id, context_narrative, target_narrative, gemini_score "
+    #     "FROM cross_encoder_labels WHERE label = 'positive' ORDER BY id"
+    # )
+    # negatives = _db.fetchall(
+    #     "SELECT scene_id, context_narrative, target_narrative, gemini_score "
+    #     "FROM cross_encoder_labels WHERE label = 'negative' ORDER BY id"
+    # )
+    #
+    # max_neg = len(positives) * neg_ratio
+    # if len(negatives) > max_neg:
+    #     negatives = random.sample(negatives, max_neg)
+    #     logger.info(
+    #         "Downsampled negatives: %d → %d (ratio 1:%d)",
+    #         len(negatives), max_neg, neg_ratio,
+    #     )
+    #
+    # rows = positives + negatives
+    # random.shuffle(rows)
+    # logger.info(
+    #     "Loaded %d samples (positive=%d, negative=%d).",
+    #     len(rows), len(positives), len(negatives),
+    # )
+    #
+    # split = math.ceil(len(rows) * (1 - test_ratio))
+    # train_rows = rows[:split]
+    # test_rows  = rows[split:]
+    # logger.info("Split: train=%d, test=%d", len(train_rows), len(test_rows))
+    # return train_rows, test_rows
+    # ────────────────────────────────────────────────────────────────────────
+
+    # [개선된 코드 — scene_id 단위 분리]
+    # 이유: 동일 씬의 pair가 train/test 양쪽에 들어가면 CE 모델이 씬 문맥을 암기할 수 있음.
+    #       scene_id 단위로 분리하면 test 씬은 학습 중 전혀 노출되지 않아 leakage 방지.
     import math
+    from collections import defaultdict
 
     rows = _db.fetchall(
         """
@@ -61,8 +95,7 @@ def _load_train_data(neg_ratio: int = 3, test_ratio: float = 0.2) -> tuple[list[
     if not rows:
         return [], []
 
-    # ── 씬 단위 분리 ──────────────────────────────────────────────────────────
-    from collections import defaultdict
+    # scene_id 단위로 그룹핑
     scene_map: dict[int, list[dict]] = defaultdict(list)
     for r in rows:
         scene_map[r["scene_id"]].append(r)
@@ -84,7 +117,7 @@ def _load_train_data(neg_ratio: int = 3, test_ratio: float = 0.2) -> tuple[list[
         len(train_all), len(test_all),
     )
 
-    # ── train: negative 다운샘플링 ────────────────────────────────────────────
+    # train: negative 다운샘플링
     train_pos = [r for r in train_all if r["label"] == "positive"]
     train_neg = [r for r in train_all if r["label"] == "negative"]
 
@@ -121,7 +154,6 @@ def run(epochs: int = 3, output_dir: str = DEFAULT_OUTPUT_DIR, neg_ratio: int = 
         logger.error("sentence-transformers가 설치되지 않았습니다. pip install sentence-transformers")
         sys.exit(1)
 
-    # v2.0: scene_id 단위 train/test 분리
     train_rows, test_rows = _load_train_data(neg_ratio=neg_ratio)
     if not train_rows:
         logger.error("학습 데이터가 없습니다. labeling_gemini.py를 먼저 실행하세요.")
