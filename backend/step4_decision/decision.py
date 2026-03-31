@@ -601,7 +601,7 @@ def run(job_id: str, candidates: list[dict], duration_sec: float = 0.0) -> None:
                         if desire and desire in desire_idx_map and tgt in tgt_idx:
                             ctx_sim = minilm_lookup.get((ctx, tgt), 0.0)
                             d_sim = float(desire_sim_matrix[desire_idx_map[desire], tgt_idx[tgt]])
-                            minilm_lookup[(ctx, tgt)] = 0.5 * ctx_sim + 0.5 * d_sim
+                            minilm_lookup[(ctx, tgt)] = 0.7 * ctx_sim + 0.3 * d_sim
                             desire_lookup[(ctx, tgt)] = d_sim
                     logger.info(
                         "[%s] Desire blending: %d desires × %d ads blended into minilm_lookup",
@@ -660,7 +660,7 @@ def run(job_id: str, candidates: list[dict], duration_sec: float = 0.0) -> None:
                         for key, ce_score in list(sim_lookup.items()):
                             d_sim = desire_lookup.get(key)
                             if d_sim is not None:
-                                sim_lookup[key] = 0.5 * ce_score + 0.5 * d_sim
+                                sim_lookup[key] = 0.7 * ce_score + 0.3 * d_sim
                                 blended_count += 1
                         logger.info(
                             "[%s] CE + desire blending: %d/%d pairs blended",
