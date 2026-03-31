@@ -268,9 +268,14 @@ def _score_candidate(
                 return 0, None, 0.0
 
     # ── 1차 필터: pre_filter (GitHub 모듈) ──────────────────────────────────
-    passed, similarity = pre_filter.passes(candidate, precomputed_similarity)
-    if not passed:
-        return 0, None, similarity
+    # precomputed_similarity가 있으면 outer pre_filter를 이미 통과한 후보 → threshold 재검사 생략
+    # (CE top-3 후보는 outer pre_filter 통과 보장, inner 재검사 시 씬 유형별 threshold 차이로 오탈락)
+    if precomputed_similarity is not None:
+        similarity = precomputed_similarity
+    else:
+        passed, similarity = pre_filter.passes(candidate, None)
+        if not passed:
+            return 0, None, similarity
 
     # ── 2차 필터: 물리적 수용 가능성 (scoring.py v3.1) ──────────────────────
     if ad_type == "video_clip" and ad_dur is not None:
