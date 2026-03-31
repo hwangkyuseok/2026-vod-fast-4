@@ -10,6 +10,8 @@ google-genai>=1.0.0
 
 # ── Cross-Encoder 학습 (train_cross_encoder.py) ───────────────────────────────
 sentence-transformers>=2.7.0
+datasets>=2.14.0
+accelerate>=1.1.0
 scikit-learn>=1.3.0
 
 # ── 유틸리티 ──────────────────────────────────────────────────────────────────
