@@ -9,12 +9,23 @@ ms-marco-MiniLM-L-12-v2를 Fine-tuning하여 로컬에 저장.
 
 저장 경로 기본값: /app/storage/models/cross_encoder
 
-[split 컬럼 관리 규칙]
-  cross_encoder_labels.split = 'train' | 'test' | NULL
-  - 최초 실행 시 split=NULL 행을 scene_id 단위로 80/20 할당 후 DB에 영구 저장
-  - 이후 실행에서는 DB에 저장된 split 값을 그대로 사용 (재할당 없음)
-  - 새로 추가된 라벨(split=NULL)은 다음 실행 시 자동으로 할당됨
-  → 동일 씬이 train/test 양쪽에 들어가지 않으며, 실행마다 split이 바뀌지 않음
+[테이블 역할]
+  cross_encoder_labels
+    split      : 'train' | 'test' | NULL
+                 NULL → 최초 실행 시 scene_id 단위 80/20 할당 후 영구 저장
+    trained_at : 실제 학습에 사용된 시각 (NULL = 아직 미사용)
+
+  ce_training_runs
+    학습 실행 이력 (run_at, train_count, test_count, epochs, model_path)
+
+[학습 흐름]
+  1. split=NULL 행 → scene_id 단위 80/20 자동 할당 (DB 영구 저장)
+  2. split='train' 행 전체 로드 → negative 다운샘플링
+  3. split='test'  행 전체 로드 → 평가 전용
+  4. ce_training_runs INSERT (학습 시작 기록)
+  5. Fine-tuning 실행
+  6. cross_encoder_labels.trained_at = NOW() 업데이트
+  7. ce_training_runs 실제 건수/경로 업데이트
 """
 
 import argparse
@@ -59,9 +70,9 @@ def _assign_split_if_needed() -> None:
     scene_ids = [r["scene_id"] for r in unassigned_scenes]
     random.shuffle(scene_ids)
 
-    n_test     = max(1, math.ceil(len(scene_ids) * TEST_RATIO))
-    test_ids   = scene_ids[:n_test]
-    train_ids  = scene_ids[n_test:]
+    n_test    = max(1, math.ceil(len(scene_ids) * TEST_RATIO))
+    test_ids  = scene_ids[:n_test]
+    train_ids = scene_ids[n_test:]
 
     if train_ids:
         _db.execute(
@@ -80,6 +91,48 @@ def _assign_split_if_needed() -> None:
         "Split 신규 할당: total_scenes=%d → train_scenes=%d, test_scenes=%d",
         len(scene_ids), len(train_ids), len(test_ids),
     )
+
+
+# ── 학습 이력 ──────────────────────────────────────────────────────────────────
+
+def _create_training_run(epochs: int, model_path: str) -> int:
+    """ce_training_runs에 학습 시작 row 생성 후 run_id 반환."""
+    rows = _db.fetchall(
+        """
+        INSERT INTO ce_training_runs (epochs, model_path)
+        VALUES (%s, %s)
+        RETURNING id
+        """,
+        [epochs, model_path],
+    )
+    run_id = rows[0]["id"]
+    logger.info("Training run 시작 기록: run_id=%d", run_id)
+    return run_id
+
+
+def _finalize_training_run(run_id: int, train_count: int, test_count: int) -> None:
+    """학습 완료 후 ce_training_runs 실제 건수 업데이트."""
+    _db.execute(
+        """
+        UPDATE ce_training_runs
+           SET train_count = %s,
+               test_count  = %s
+         WHERE id = %s
+        """,
+        [train_count, test_count, run_id],
+    )
+    logger.info(
+        "Training run 완료 기록: run_id=%d, train=%d, test=%d",
+        run_id, train_count, test_count,
+    )
+
+
+def _mark_trained_at() -> None:
+    """split='train' 행 전체에 trained_at = NOW() 기록."""
+    _db.execute(
+        "UPDATE cross_encoder_labels SET trained_at = NOW() WHERE split = 'train'"
+    )
+    logger.info("cross_encoder_labels.trained_at 업데이트 완료")
 
 
 # ── DB 조회 ────────────────────────────────────────────────────────────────────
@@ -171,6 +224,9 @@ def run(epochs: int = 3, output_dir: str = DEFAULT_OUTPUT_DIR, neg_ratio: int = 
     output_path.mkdir(parents=True, exist_ok=True)
     checkpoint_path = output_path / "checkpoints"
 
+    # 학습 이력 시작 기록
+    run_id = _create_training_run(epochs=epochs, model_path=str(output_path))
+
     # 체크포인트가 있으면 이어서 학습, 없으면 베이스 모델로 시작
     existing = sorted(checkpoint_path.glob("*-steps")) if checkpoint_path.exists() else []
     if existing:
@@ -220,6 +276,10 @@ def run(epochs: int = 3, output_dir: str = DEFAULT_OUTPUT_DIR, neg_ratio: int = 
 
     model.save(str(output_path))
     logger.info("Fine-tuning complete. Model saved to: %s", output_path)
+
+    # 학습 완료 후 이력 기록
+    _finalize_training_run(run_id, len(train_samples), len(test_samples))
+    _mark_trained_at()
 
 
 if __name__ == "__main__":
