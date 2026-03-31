@@ -4,6 +4,11 @@ step4_training/train_cross_encoder.py — Cross-Encoder Fine-tuning
 cross_encoder_labels 테이블의 positive/negative 라벨 데이터로
 ms-marco-MiniLM-L-12-v2를 Fine-tuning하여 로컬에 저장.
 
+v2.0 변경사항:
+  - train/test 분리를 pair 단위 랜덤 → scene_id 단위로 변경
+    (동일 씬이 train/test 양쪽에 들어가는 데이터 누수 방지)
+  - 평가 지표: CERerankingEvaluator (씬별 positive 랭킹 정확도)
+
 실행:
     python -m step4_training.train_cross_encoder [--epochs N] [--output-dir PATH]
 
@@ -29,45 +34,79 @@ DEFAULT_OUTPUT_DIR = "/app/storage/models/cross_encoder"
 
 # ── DB 조회 ────────────────────────────────────────────────────────────────────
 
-def _load_train_data(neg_ratio: int = 3) -> list[dict]:
-    """positive/negative 라벨 데이터 로드 (ambiguous 제외).
+def _load_train_data(neg_ratio: int = 3, test_ratio: float = 0.2) -> tuple[list[dict], list[dict]]:
+    """
+    positive/negative 라벨 데이터를 씬(scene_id) 단위로 train/test 분리.
 
-    neg_ratio: positive 1건당 negative 최대 비율 (기본 1:2).
+    v2.0: pair 단위 랜덤 분리 → scene_id 단위 분리로 변경.
+    동일 씬이 train/test 양쪽에 들어가는 데이터 누수(leakage)를 방지.
+
+    neg_ratio  : positive 1건당 negative 최대 비율 (기본 1:3)
+    test_ratio : test set 비율 (기본 0.2 = 20%)
+
+    Returns:
+        (train_rows, test_rows)
     """
     import random
+    import math
 
-    positives = _db.fetchall(
+    rows = _db.fetchall(
         """
-        SELECT context_narrative, target_narrative, gemini_score
+        SELECT scene_id, context_narrative, target_narrative, gemini_score, label
           FROM cross_encoder_labels
-         WHERE label = 'positive'
-         ORDER BY id
+         WHERE label IN ('positive', 'negative')
+         ORDER BY scene_id, id
         """
     )
-    negatives = _db.fetchall(
-        """
-        SELECT context_narrative, target_narrative, gemini_score
-          FROM cross_encoder_labels
-         WHERE label = 'negative'
-         ORDER BY id
-        """
-    )
+    if not rows:
+        return [], []
 
-    max_neg = len(positives) * neg_ratio
-    if len(negatives) > max_neg:
-        negatives = random.sample(negatives, max_neg)
-        logger.info(
-            "Downsampled negatives: %d → %d (ratio 1:%d)",
-            len(negatives) + (len(negatives) - max_neg), max_neg, neg_ratio,
-        )
+    # ── 씬 단위 분리 ──────────────────────────────────────────────────────────
+    from collections import defaultdict
+    scene_map: dict[int, list[dict]] = defaultdict(list)
+    for r in rows:
+        scene_map[r["scene_id"]].append(r)
 
-    rows = positives + negatives
-    random.shuffle(rows)
+    all_scene_ids = list(scene_map.keys())
+    random.shuffle(all_scene_ids)
+
+    n_test = max(1, math.ceil(len(all_scene_ids) * test_ratio))
+    test_scene_ids  = set(all_scene_ids[:n_test])
+    train_scene_ids = set(all_scene_ids[n_test:])
+
+    train_all = [r for sid in train_scene_ids for r in scene_map[sid]]
+    test_all  = [r for sid in test_scene_ids  for r in scene_map[sid]]
+
     logger.info(
-        "Loaded %d samples (positive=%d, negative=%d).",
-        len(rows), len(positives), len(negatives),
+        "Scene-level split: train_scenes=%d, test_scenes=%d "
+        "(train_pairs=%d, test_pairs=%d)",
+        len(train_scene_ids), len(test_scene_ids),
+        len(train_all), len(test_all),
     )
-    return rows
+
+    # ── train: negative 다운샘플링 ────────────────────────────────────────────
+    train_pos = [r for r in train_all if r["label"] == "positive"]
+    train_neg = [r for r in train_all if r["label"] == "negative"]
+
+    max_neg = len(train_pos) * neg_ratio
+    if len(train_neg) > max_neg:
+        train_neg = random.sample(train_neg, max_neg)
+
+    train_rows = train_pos + train_neg
+    random.shuffle(train_rows)
+
+    logger.info(
+        "Train — positive=%d, negative=%d (ratio 1:%d) / total=%d",
+        len(train_pos), len(train_neg), neg_ratio, len(train_rows),
+    )
+    logger.info(
+        "Test  — positive=%d, negative=%d / total=%d",
+        sum(1 for r in test_all if r["label"] == "positive"),
+        sum(1 for r in test_all if r["label"] == "negative"),
+        len(test_all),
+    )
+
+    return train_rows, test_all
 
 
 # ── 학습 ──────────────────────────────────────────────────────────────────────
@@ -82,17 +121,11 @@ def run(epochs: int = 3, output_dir: str = DEFAULT_OUTPUT_DIR, neg_ratio: int = 
         logger.error("sentence-transformers가 설치되지 않았습니다. pip install sentence-transformers")
         sys.exit(1)
 
-    import math
-    rows = _load_train_data(neg_ratio=neg_ratio)
-    if not rows:
+    # v2.0: scene_id 단위 train/test 분리
+    train_rows, test_rows = _load_train_data(neg_ratio=neg_ratio)
+    if not train_rows:
         logger.error("학습 데이터가 없습니다. labeling_gemini.py를 먼저 실행하세요.")
         sys.exit(1)
-
-    # train/test split (80/20)
-    split = math.ceil(len(rows) * 0.8)
-    train_rows = rows[:split]
-    test_rows  = rows[split:]
-    logger.info("Split: train=%d, test=%d", len(train_rows), len(test_rows))
 
     def to_samples(data: list[dict]) -> list:
         return [
@@ -163,7 +196,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Cross-Encoder Fine-tuner")
     parser.add_argument("--epochs",     type=int, default=3)
     parser.add_argument("--output-dir", type=str, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--neg-ratio",  type=int, default=3, help="positive 1건당 negative 최대 비율 (기본 1:3)")
+    parser.add_argument("--neg-ratio",  type=int,   default=3,   help="positive 1건당 negative 최대 비율 (기본 1:3)")
+    parser.add_argument("--test-ratio", type=float, default=0.2, help="test set 비율 (기본 0.2 = 20%%)")
     args = parser.parse_args()
 
     run(epochs=args.epochs, output_dir=args.output_dir, neg_ratio=args.neg_ratio)
