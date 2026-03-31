@@ -654,18 +654,8 @@ def run(job_id: str, candidates: list[dict], duration_sec: float = 0.0) -> None:
                     # Cross-Encoder 배치 추론 (정밀 평가)
                     scores = cross_encoder_scorer.batch_score(unique_pairs)
                     sim_lookup = dict(zip(unique_pairs, scores))
-                    # 개선 4: CE + desire 유사도 블렌딩
-                    if desire_lookup:
-                        blended_count = 0
-                        for key, ce_score in list(sim_lookup.items()):
-                            d_sim = desire_lookup.get(key)
-                            if d_sim is not None:
-                                sim_lookup[key] = 0.7 * ce_score + 0.3 * d_sim
-                                blended_count += 1
-                        logger.info(
-                            "[%s] CE + desire blending: %d/%d pairs blended",
-                            job_id, blended_count, len(sim_lookup),
-                        )
+                    # 개선 4: CE 단계 desire 블렌딩 비활성화
+                    # (pre-filter 단계에서만 0.7/0.3 블렌딩 적용, CE 점수는 순수하게 사용)
                     logger.info(
                         "[%s] Cross-Encoder batch: %d pair(s) scored.",
                         job_id, len(sim_lookup),
