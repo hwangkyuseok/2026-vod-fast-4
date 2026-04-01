@@ -1,0 +1,85 @@
+# docker-compose.training.yml
+# ─────────────────────────────────────────────────────────────────────────────
+# Cross-Encoder 학습 파이프라인 (v2.0)
+#
+# 배포 경로 : /app/Docker/pipeline/
+#
+# 실행 순서:
+#   1단계 — 기존 라벨 초기화 (최초 1회):
+#     docker exec -i <postgres-container> psql -U postgres01 -d hv02 \
+#       -c "TRUNCATE cross_encoder_labels RESTART IDENTITY;"
+#
+#   2단계 — 라벨링 (TARGET_NARRATIVE 생성 완료 후):
+#     docker-compose -f docker-compose.training.yml run --rm labeling
+#     # 씬당 광고 샘플 제한 (빠른 테스트):
+#     docker-compose -f docker-compose.training.yml run --rm labeling --ads-per-scene 10
+#     # 건수 제한 테스트:
+#     docker-compose -f docker-compose.training.yml run --rm labeling --limit 100 --dry-run
+#
+#   3단계 — 학습:
+#     docker-compose -f docker-compose.training.yml run --rm training
+#     docker-compose -f docker-compose.training.yml run --rm training --epochs 5 --neg-ratio 2
+#
+#   빌드:
+#     docker-compose -f docker-compose.training.yml build
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── 1단계: Gemini 라벨링 ─────────────────────────────────────────────────────
+  labeling:
+    build:
+      context: /app/Docker/pipeline/backend
+      dockerfile: Dockerfile.training
+    image: vod-training:latest
+    entrypoint: ["python", "-m", "step4_training.labeling_gemini"]
+    restart: "no"
+    environment:
+      DB_HOST: "${DB_HOST}"
+      DB_PORT: "${DB_PORT:-5432}"
+      DB_NAME: "${DB_NAME}"
+      DB_USER: "${DB_USER}"
+      DB_PASSWORD: "${DB_PASSWORD}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY}"
+      GEMINI_RPM_INTERVAL: "${GEMINI_RPM_INTERVAL:-0.1}"
+      STORAGE_BASE: "/app/storage"
+      TZ: "${TZ:-Asia/Seoul}"
+      HF_HOME: "/models"
+      TRANSFORMERS_CACHE: "/models"
+    volumes:
+      - /app/HelloVision/data/storage:/app/storage
+      - /app/HelloVision/data/logs:/app/storage/logs
+      - training_model_cache:/models
+
+  # ── 2단계: Cross-Encoder Fine-tuning ─────────────────────────────────────────
+  training:
+    build:
+      context: /app/Docker/pipeline/backend
+      dockerfile: Dockerfile.training
+    image: vod-training:latest
+    entrypoint: ["python", "-m", "step4_training.train_cross_encoder"]
+    restart: "no"
+    environment:
+      DB_HOST: "${DB_HOST}"
+      DB_PORT: "${DB_PORT:-5432}"
+      DB_NAME: "${DB_NAME}"
+      DB_USER: "${DB_USER}"
+      DB_PASSWORD: "${DB_PASSWORD}"
+      STORAGE_BASE: "/app/storage"
+      TZ: "${TZ:-Asia/Seoul}"
+      HF_HOME: "/models"
+      TRANSFORMERS_CACHE: "/models"
+    volumes:
+      - /app/HelloVision/data/storage:/app/storage
+      - /app/HelloVision/data/logs:/app/storage/logs
+      - training_model_cache:/models
+    deploy:
+      resources:
+        limits:
+          memory: 6G
+        reservations:
+          memory: 2G
+
+volumes:
+  training_model_cache:
+    driver: local

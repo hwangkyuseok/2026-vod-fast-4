@@ -51,6 +51,7 @@ services:
       # ── Gemini Flash API ─────────────────────────────────────────────────
       GEMINI_API_KEY: "${GEMINI_API_KEY}"
       GEMINI_MODEL: "${GEMINI_MODEL:-gemini-2.0-flash}"
+      GEMINI_RPM_INTERVAL: "${GEMINI_RPM_INTERVAL:-0.1}"
 
       # ── 시간대 ────────────────────────────────────────────────────────────
       TZ: "${TZ:-Asia/Seoul}"

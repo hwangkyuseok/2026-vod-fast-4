@@ -1,23 +1,28 @@
 """
-vision_gemini.py — Scene Description & Context via Gemini Flash (v2.1)
+vision_gemini.py — Scene Description & Context via Gemini Flash (v2.2)
 ──────────────────────────────────────────────────────────────────────
 Qwen2-VL(vision_qwen.py)과 동일한 함수 시그니처를 유지하면서
 Google Gemini Flash API로 대체하는 모듈.
 
 config.VLM_BACKEND = "gemini" 일 때 consumer.py에서 이 모듈을 사용.
 
-Rate limit (무료 티어):
-  - 15 RPM (분당 15회) → 호출 간 최소 4초 대기
-  - 1,500 RPD (일 1500회)
+Rate limit:
+  무료 티어: 15 RPM  → GEMINI_RPM_INTERVAL=4.0 (호출 간 4초 대기)
+  유료 티어: 1,000+ RPM → GEMINI_RPM_INTERVAL=0.1 (기본값, ~600 RPM)
+  환경변수 GEMINI_RPM_INTERVAL 로 조정 가능.
 
 환경변수:
-  GEMINI_API_KEY: Google AI Studio에서 발급한 API 키
-  GEMINI_MODEL:   사용할 모델 (기본: gemini-2.5-flash-preview-04-17)
+  GEMINI_API_KEY:      Google AI Studio에서 발급한 API 키
+  GEMINI_MODEL:        사용할 모델 (기본: gemini-3-flash-preview)
+  GEMINI_RPM_INTERVAL: 호출 간 최소 대기 초 (기본: 0.1 — 유료 티어)
+
+변경사항 (v2.2):
+  - GEMINI_RPM_INTERVAL config 연동 (하드코딩 4.0 → 동적 설정)
+  - 유료 티어 기본값 0.1s 적용 (처리 속도 최대 40배 향상)
 
 변경사항 (v2.1):
   - 프롬프트: 상황/감정/욕구 3항목 형식으로 변경
   - analyse_scene_context(): detected_objects 파라미터 추가
-  - GEMINI_MODEL 기본값 → gemini-2.5-flash-preview-04-17
 """
 
 import base64
@@ -35,9 +40,11 @@ from common import config
 logger = logging.getLogger(__name__)
 
 # ── 모델 설정 ──────────────────────────────────────────────────────────────────
-_MODEL_NAME   = getattr(config, "GEMINI_MODEL", "gemini-2.0-flash")
+_MODEL_NAME   = getattr(config, "GEMINI_MODEL", "gemini-3-flash-preview")
 _API_KEY      = getattr(config, "GEMINI_API_KEY", "")
-_RPM_INTERVAL = 4.0   # 15 RPM → 최소 4초 간격
+# 호출 간 최소 대기 시간: config → 환경변수 GEMINI_RPM_INTERVAL (기본 0.1s = 유료 티어)
+# 무료 티어 사용 시 GEMINI_RPM_INTERVAL=4.0 으로 설정
+_RPM_INTERVAL = float(getattr(config, "GEMINI_RPM_INTERVAL", 0.1))
 
 _last_call_time: float = 0.0
 _client: genai.Client | None = None

@@ -121,6 +121,10 @@ SCENE_SAMPLE_FRAMES       = int(os.getenv("SCENE_SAMPLE_FRAMES", "5"))  # 개선
 VLM_BACKEND  = os.getenv("VLM_BACKEND",  "qwen")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL   = os.getenv("GEMINI_MODEL",   "gemini-2.5-flash-preview-04-17")
+# RPM 제한 준수를 위한 호출 간 최소 대기 시간 (초)
+#   무료 티어 15 RPM  → 4.0s
+#   유료 티어 1000 RPM → 0.1s (600 RPM 기준 보수적 값)
+GEMINI_RPM_INTERVAL = float(os.getenv("GEMINI_RPM_INTERVAL", "0.1"))
 
 # ─── API Server ───────────────────────────────────────────────────────────────
 API_HOST     = os.getenv("API_HOST",     "0.0.0.0")
