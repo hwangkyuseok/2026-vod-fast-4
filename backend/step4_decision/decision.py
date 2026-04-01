@@ -733,7 +733,9 @@ def run(job_id: str, candidates: list[dict], duration_sec: float = 0.0) -> None:
             ctx = c.get("context_narrative") or ""
             tgt = c.get("target_narrative") or ""
             # CE 점수는 후보 순위 선별용. 실제 scoring에는 threshold를 통과한 minilm 점수 사용
-            precomputed = minilm_lookup.get((ctx, tgt)) or sim_lookup.get((ctx, tgt))
+            ml_val = minilm_lookup.get((ctx, tgt))
+            sl_val = sim_lookup.get((ctx, tgt))
+            precomputed = ml_val if ml_val is not None else sl_val
             score, window, similarity = _score_candidate(
                 c, job_id,
                 precomputed_similarity=precomputed,

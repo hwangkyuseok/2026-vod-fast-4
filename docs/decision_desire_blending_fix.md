@@ -87,16 +87,14 @@ git checkout checkpoint/before-desire-blending-fix -- backend/step4_decision/dec
 ## 배포 절차
 
 ```bash
-# 1. 로컬 수정 완료 후 서버에 파일 전송
-scp backend/step4_decision/decision.py \
-    vhcalnplci@121.167.223.17:/app/HelloVision/backend/step4_decision/decision.py
+# 1. 컨테이너에 직접 파일 복사 (볼륨 마운트 없음 주의)
+docker cp backend/step4_decision/decision.py \
+    pipeline-step4-1:/app/step4_decision/decision.py
 
 # 2. step4 컨테이너 재시작 (새 코드 반영)
-ssh vhcalnplci@121.167.223.17 \
-    "cd /app/Docker/pipeline && docker-compose restart step4"
+docker-compose -f /path/to/docker-compose.yml restart step4
 
-# 3. 테스트 — 동일 job 재실행
-# http://121.167.223.17:3000/player/c1390050-359c-476b-8a59-362d6743df8e
+# 3. 테스트 — 동일 job 재실행 후 overlay 결과 확인
 ```
 
 ---
