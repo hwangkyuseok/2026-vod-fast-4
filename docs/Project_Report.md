@@ -866,3 +866,109 @@ DB에서 조회한 실제 씬-광고 유사도 (MiniLM 코사인 유사도):
 | 4 | decision.py 호출부 교체 | 🔲 진행 예정 |
 | 5 | pre_filter.py 임계값 재조정 | 🔲 진행 예정 |
 | 6 | 실제 유사도 비교 테스트 (기존 vs 개선) | 🔲 진행 예정 |
+
+---
+
+## 19. VLM 백엔드 비용 최적화 — Gemini → Qwen2.5-VL 대체 테스트
+
+### 배경
+
+Gemini 2.5 Flash API의 토큰 비용이 높아, 동일한 역할을 수행할 수 있는 무료/저비용 대체 모델을 탐색하였다.
+
+Gemini가 담당하는 역할:
+- 씬 프레임(최대 3장) + YOLO 탐지 객체 + Whisper 대사를 입력받아
+- **상황/감정/욕구** 3항목 형식의 `context_narrative`를 생성
+
+### 대체 모델 후보 조사
+
+HuggingFace Inference API에서 무료로 사용 가능한 Image-Text-to-Text 모델을 대상으로 조사하였다.
+
+#### 평가 기준
+
+| 기준 | 설명 |
+| ---- | ---- |
+| 한국어 성능 | KMMLU 벤치마크 등 한국어 평가 지표 |
+| 추론 속도 | 모델 크기, MoE 여부, 프로바이더 성능 |
+| 비용 | 무료 티어 크레딧 소모량 |
+| 구조화 출력 | 상황/감정/욕구 형식 프롬프트 준수 능력 |
+
+#### 후보 모델 비교
+
+| 순위 | 모델 | 크기 | 한국어 | 속도 | 무료 효율 | Provider |
+| ---- | ---- | ---- | ------ | ---- | --------- | -------- |
+| **1** | **Qwen2.5-VL-7B-Instruct** | 8B | KMMLU 검증 | 가장 빠름 | 최고 | Hyperbolic |
+| 2 | Qwen3-VL-30B-A3B-Instruct | 30B (MoE 3B) | 매우 좋음 | 빠름 | 좋음 | Novita |
+| 3 | Gemma-4-31B-it | 33B | 보통 | 보통 | 보통 | Novita |
+| 4 | Qwen3-VL-8B-Instruct | 9B | 좋음 | 느림 (2.5 대비 3~5배) | 좋음 | Novita |
+| 5 | Qwen2.5-VL-72B-Instruct | 73B | 최고 (KMMLU 62) | 매우 느림 | 나쁨 | Hyperbolic |
+
+#### 비추천 모델
+
+| 모델 | 사유 |
+| ---- | ---- |
+| GLM-4.5V / 4.6V | 중국어+영어만 공식 지원, 한국어 미검증 |
+| ERNIE-4.5-VL | 중국어 특화, "PT"(사전학습) 상태로 프롬프트 준수 불안정 |
+| Qwen3-VL-235B | 성능 최고이나 무료 크레딧 즉시 소진 |
+
+### 선정 모델: Qwen2.5-VL-7B-Instruct
+
+| 항목 | 내용 |
+| ---- | ---- |
+| 모델명 | `Qwen/Qwen2.5-VL-7B-Instruct` |
+| 파라미터 수 | 8B (Dense) |
+| 한국어 벤치마크 | KMMLU 46.59 (한국어 Massive Multitask Language Understanding) |
+| 호출 방식 | HuggingFace Inference API (Hyperbolic provider) |
+| 비용 | 무료 티어 월 100K 크레딧 / PRO $9/월 2M 크레딧 |
+| 특징 | 한국어 OCR/텍스트 공식 지원, 구조화 출력(JSON) 지원, 384차원 임베딩 |
+
+### 구현: 스위치 방식 (ON/OFF 전환)
+
+기존 Gemini 코드를 수정하지 않고, 새 모듈을 추가하여 `.env` 스위치로 즉시 전환 가능하게 구현하였다.
+
+#### 전환 방법
+
+```env
+# .env 파일에서 한 줄만 변경
+VLM_BACKEND=gemini     # 기존 Gemini (원복)
+VLM_BACKEND=qwen_hf    # Qwen2.5-VL 테스트
+```
+
+#### 수정/추가 파일
+
+| 파일 | 변경 유형 | 내용 |
+| ---- | --------- | ---- |
+| `vision_qwen_hf.py` | **신규 생성** | Qwen2.5-VL HuggingFace API 호출 모듈. vision_gemini.py와 동일한 함수 시그니처 |
+| `consumer_b.py` | 수정 (2줄 추가) | `VLM_BACKEND=qwen_hf` 분기 추가 |
+| `config.py` | 수정 | `HF_API_TOKEN`, `HF_MODEL`, `HF_RPM_INTERVAL` 환경변수 추가 |
+| `.env` | 수정 | HuggingFace 토큰 + 모델 설정 추가 |
+
+#### 동일한 프롬프트 사용
+
+Gemini와 동일한 프롬프트 템플릿을 사용하여 출력 형식의 일관성을 보장한다:
+
+```
+상황: 이 씬에 등장하는 장면, 배경, 인물의 행동을 묘사하세요.
+감정: 이 씬이 시청자에게 전달하는 감성적 분위기나 정서를 표현하세요.
+욕구: 이 씬을 본 시청자가 느끼는 소비 욕구를 서술하세요.
+```
+
+### 비용 비교
+
+| | Gemini 2.5 Flash | Qwen2.5-VL-7B (HF) |
+| -- | ----------------- | ------------------- |
+| 호출 방식 | Google API | HuggingFace Inference API |
+| 비용 | 유료 (토큰당 과금) | 무료 (월 100K 크레딧) |
+| Rate Limit | 유료: 1000+ RPM | 무료: ~300 RPM |
+| 모델 다운로드 | 불필요 | 불필요 |
+
+### 작업 상태
+
+| 순서 | 작업 | 상태 |
+| ---- | ---- | ---- |
+| 1 | 대체 모델 후보 조사 | ✅ 완료 |
+| 2 | Qwen2.5-VL-7B 선정 | ✅ 완료 |
+| 3 | vision_qwen_hf.py 모듈 구현 | ✅ 완료 |
+| 4 | consumer_b.py 스위치 분기 추가 | ✅ 완료 |
+| 5 | config.py 환경변수 추가 | ✅ 완료 |
+| 6 | 실제 성능 비교 테스트 (Gemini vs Qwen) | 🔲 진행 예정 |
+| 7 | 테스트 결과에 따라 기본 백엔드 결정 | 🔲 진행 예정 |
