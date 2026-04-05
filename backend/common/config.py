@@ -116,15 +116,25 @@ SBERT_SIM_THRESHOLD       = float(os.getenv("SBERT_SIM_THRESHOLD",   "0.3"))
 # Gemini 씬별 프레임 샘플 수 (Step2-B 전용)
 SCENE_SAMPLE_FRAMES       = int(os.getenv("SCENE_SAMPLE_FRAMES", "5"))  # 개선 6: 3→5 (safe_area/density 정밀도 향상)
 
-# ─── Gemini Flash API ────────────────────────────────────────────────────────
-# VLM_BACKEND: "qwen" (로컬 Qwen2-VL) | "gemini" (Google Gemini Flash API)
+# ─── VLM Backend ─────────────────────────────────────────────────────────────
+# VLM_BACKEND: "gemini" | "qwen_hf" | "qwen"
+#   gemini  : Google Gemini Flash API (유료, 고성능)
+#   qwen_hf : Qwen2.5-VL via HuggingFace Inference API (무료/저비용)
+#   qwen    : 로컬 Qwen2-VL (GPU 필요)
 VLM_BACKEND  = os.getenv("VLM_BACKEND",  "qwen")
+
+# ─── Gemini Flash API (VLM_BACKEND=gemini) ───────────────────────────────────
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL   = os.getenv("GEMINI_MODEL",   "gemini-2.5-flash-preview-04-17")
+GEMINI_MODEL   = os.getenv("GEMINI_MODEL",   "gemini-2.5-flash")
 # RPM 제한 준수를 위한 호출 간 최소 대기 시간 (초)
 #   무료 티어 15 RPM  → 4.0s
 #   유료 티어 1000 RPM → 0.1s (600 RPM 기준 보수적 값)
 GEMINI_RPM_INTERVAL = float(os.getenv("GEMINI_RPM_INTERVAL", "0.1"))
+
+# ─── HuggingFace Inference API (VLM_BACKEND=qwen_hf) ────────────────────────
+HF_API_TOKEN     = os.getenv("HF_API_TOKEN", "")
+HF_MODEL         = os.getenv("HF_MODEL", "Qwen/Qwen2.5-VL-7B-Instruct")
+HF_RPM_INTERVAL  = float(os.getenv("HF_RPM_INTERVAL", "1.0"))
 
 # ─── API Server ───────────────────────────────────────────────────────────────
 API_HOST     = os.getenv("API_HOST",     "0.0.0.0")

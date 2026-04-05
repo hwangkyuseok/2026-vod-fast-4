@@ -79,7 +79,7 @@ def _get_ad_inventory() -> list[dict]:
     return _db.fetchall(
         """
         SELECT ad_id, ad_name, ad_type, resource_path,
-               duration_sec, target_narrative, width, height,
+               duration_sec, target_narrative_v2 AS target_narrative, width, height,
                ad_category, ad_category_path
           FROM ad_inventory
         """,
