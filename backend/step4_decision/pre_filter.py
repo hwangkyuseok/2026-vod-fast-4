@@ -14,6 +14,17 @@ logger = logging.getLogger(__name__)
 
 NARRATIVE_THRESHOLD = 0.40  # MiniLM pre-filter 기본값
 
+
+def _extract_desire(narrative: str) -> str:
+    """
+    narrative 텍스트에서 '욕구:' 줄만 추출한다.
+    욕구 줄이 없으면 원본 전체를 반환한다.
+    """
+    for line in narrative.splitlines():
+        if line.strip().startswith("욕구:"):
+            return line.strip()
+    return narrative
+
 # 개선 3: 씬 유형별 임계값 차등 적용
 # - 객체 감지 있음: 0.38 (구체적 장면, 약간 완화)
 # - 긴 씬 (≥ 60초): 0.35 (롱씬은 다양한 광고 수용)
@@ -62,7 +73,10 @@ def passes(candidate: dict, precomputed_similarity: float | None = None) -> tupl
     if precomputed_similarity is not None:
         similarity = precomputed_similarity
     elif embedding_scorer.is_available() and context_narrative and target_narrative:
-        similarity = embedding_scorer.score_narrative_fit(context_narrative, target_narrative)
+        # 2단계 개선: 욕구 필드만 추출하여 1:1 비교 (상황/감정 노이즈 제거)
+        ctx_desire = _extract_desire(context_narrative)
+        tgt_desire = _extract_desire(target_narrative)
+        similarity = embedding_scorer.score_narrative_fit(ctx_desire, tgt_desire)
     else:
         similarity = 0.0
 
