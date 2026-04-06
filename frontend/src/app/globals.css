@@ -1,3 +1,40 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+  --hv-red:        #E60012;
+  --hv-bg:         #0F0F0F;
+  --hv-sidebar:    #1A1A1A;
+  --hv-card:       #1E1E1E;
+  --hv-card-hover: #252525;
+  --hv-border:     rgba(255, 255, 255, 0.08);
+  --hv-text-1:     #FFFFFF;
+  --hv-text-2:     #AAAAAA;
+  --hv-text-3:     #555555;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  background-color: var(--hv-bg);
+  color: var(--hv-text-1);
+}
+
+/* 스크롤바 */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: #555; }
+
+/* 카드 호버 */
+.hv-card {
+  background: var(--hv-card);
+  border-radius: 12px;
+  overflow: hidden;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.hv-card:hover {
+  transform: scale(1.04);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+}
