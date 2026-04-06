@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
-import VideoPlayer from "@/components/VideoPlayer";
+import TVPlayer from "@/components/TVPlayer";
 import type { JobStatus, OverlayMetadata } from "@/types/overlay";
 
 const API              = "/api/backend";
@@ -28,6 +28,8 @@ export default function PlayerPage() {
   const { jobId } = useParams<{ jobId: string }>();
   const router    = useRouter();
   const [state, setState] = useState<PageState>({ phase: "loading" });
+
+  const goHome = useCallback(() => router.push("/?section=fastvod"), [router]);
 
   const fetchOverlay = useCallback(async () => {
     const res = await fetch(`${API}/overlay/${jobId}`);
@@ -68,119 +70,75 @@ export default function PlayerPage() {
     return () => clearTimeout(timer);
   }, [fetchOverlay, fetchStatus]);
 
+  /* ESC → 홈 복귀 */
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") goHome();
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [goHome]);
+
   return (
-    <div className="min-h-screen" style={{ background: "#0F0F0F" }}>
-
-      {/* ── 상단 헤더 ─────────────────────────────────────────── */}
-      <div
-        className="flex items-center gap-4 px-6 py-3"
-        style={{
-          background:   "rgba(15,15,15,0.96)",
-          borderBottom: "1px solid rgba(255,255,255,0.06)",
-          backdropFilter: "blur(10px)",
-        }}
-      >
-        <button
-          onClick={() => router.push("/")}
-          className="flex items-center gap-1 text-sm transition-colors hover:text-white"
-          style={{ color: "#666666" }}
-        >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
-          </svg>
-          홈
-        </button>
-
-        <div className="flex items-center gap-2 ml-1">
-          <span className="font-black text-xs" style={{ color: "#E60012" }}>LG</span>
-          <span className="font-semibold text-xs text-white">헬로비전</span>
-          <span
-            className="text-[10px] font-bold px-2 py-0.5 rounded"
-            style={{ background: "#E60012", color: "#fff" }}
-          >
-            FAST VOD
-          </span>
+    /* 풀스크린: 사이드바 마진 무효화, 100vw x 100vh */
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center"
+      style={{ background: "#000" }}
+    >
+      {/* 로딩 */}
+      {state.phase === "loading" && (
+        <div className="flex flex-col items-center gap-4">
+          <div
+            className="w-10 h-10 rounded-full border-2 animate-spin"
+            style={{ borderColor: "rgba(230,0,18,0.3)", borderTopColor: "#E60012" }}
+          />
+          <p className="text-sm" style={{ color: "#666" }}>불러오는 중…</p>
         </div>
+      )}
 
-        <span
-          className="ml-auto font-mono text-[10px] truncate max-w-[180px]"
-          style={{ color: "#333333" }}
-        >
-          {jobId}
-        </span>
-      </div>
-
-      {/* ── 콘텐츠 영역 ───────────────────────────────────────── */}
-      <div className="px-6 py-6">
-
-        {/* 로딩 */}
-        {state.phase === "loading" && (
-          <div className="flex items-center justify-center min-h-[70vh]">
-            <div className="flex flex-col items-center gap-4">
-              <div
-                className="w-10 h-10 rounded-full border-2 animate-spin"
-                style={{ borderColor: "rgba(230,0,18,0.3)", borderTopColor: "#E60012" }}
-              />
-              <p className="text-sm" style={{ color: "#666666" }}>불러오는 중…</p>
-            </div>
-          </div>
-        )}
-
-        {/* 파이프라인 처리 중 */}
-        {state.phase === "polling" && (
-          <div className="flex flex-col items-center justify-center min-h-[70vh] gap-6 text-center">
-            <div
-              className="w-16 h-16 rounded-full border-2 animate-spin"
-              style={{ borderColor: "rgba(230,0,18,0.2)", borderTopColor: "#E60012" }}
-            />
-            <div>
-              <p className="text-white text-xl font-bold mb-2">분석 중입니다</p>
-              <p className="text-sm mb-4" style={{ color: "#666666" }}>
-                잠시만 기다려 주세요
-              </p>
-              <span
-                className="inline-block px-5 py-2 rounded-full text-sm font-semibold"
-                style={{
-                  background: "rgba(230,0,18,0.12)",
-                  color:      "#E60012",
-                  border:     "1px solid rgba(230,0,18,0.25)",
-                }}
-              >
-                {STATUS_LABELS[state.status.status] ?? state.status.status}
-              </span>
-            </div>
-            <p className="text-xs" style={{ color: "#333333" }}>
-              {POLL_INTERVAL_MS / 1000}초마다 자동 갱신
-            </p>
-          </div>
-        )}
-
-        {/* 오류 */}
-        {state.phase === "error" && (
-          <div className="flex flex-col items-center justify-center min-h-[70vh] gap-4 text-center">
-            <div
-              className="w-14 h-14 rounded-full flex items-center justify-center text-2xl"
-              style={{ background: "rgba(230,0,18,0.12)" }}
+      {/* 파이프라인 처리 중 */}
+      {state.phase === "polling" && (
+        <div className="flex flex-col items-center gap-6 text-center">
+          <div
+            className="w-16 h-16 rounded-full border-2 animate-spin"
+            style={{ borderColor: "rgba(230,0,18,0.2)", borderTopColor: "#E60012" }}
+          />
+          <div>
+            <p className="text-white text-xl font-bold mb-2">분석 중입니다</p>
+            <p className="text-sm mb-4" style={{ color: "#666" }}>잠시만 기다려 주세요</p>
+            <span
+              className="inline-block px-5 py-2 rounded-full text-sm font-semibold"
+              style={{ background: "rgba(230,0,18,0.12)", color: "#E60012", border: "1px solid rgba(230,0,18,0.25)" }}
             >
-              ⚠
-            </div>
-            <p className="text-white text-lg font-bold">오류가 발생했습니다</p>
-            <p className="text-sm" style={{ color: "#666666" }}>{state.message}</p>
-            <button
-              onClick={() => router.push("/")}
-              className="mt-3 px-7 py-2.5 rounded-xl text-sm font-semibold text-white hover:opacity-85 transition-opacity"
-              style={{ background: "#E60012" }}
-            >
-              홈으로 돌아가기
-            </button>
+              {STATUS_LABELS[state.status.status] ?? state.status.status}
+            </span>
           </div>
-        )}
+        </div>
+      )}
 
-        {/* 재생 준비 완료 */}
-        {state.phase === "ready" && (
-          <VideoPlayer metadata={state.metadata} />
-        )}
-      </div>
+      {/* 오류 */}
+      {state.phase === "error" && (
+        <div className="flex flex-col items-center gap-4 text-center">
+          <div
+            className="w-14 h-14 rounded-full flex items-center justify-center text-2xl"
+            style={{ background: "rgba(230,0,18,0.12)" }}
+          >⚠</div>
+          <p className="text-white text-lg font-bold">오류가 발생했습니다</p>
+          <p className="text-sm" style={{ color: "#666" }}>{state.message}</p>
+          <button
+            onClick={goHome}
+            className="mt-3 px-7 py-2.5 rounded-xl text-sm font-semibold text-white hover:opacity-85 transition-opacity"
+            style={{ background: "#E60012" }}
+          >
+            홈으로 돌아가기
+          </button>
+        </div>
+      )}
+
+      {/* 재생 준비 완료 → TV 스타일 풀스크린 플레이어 */}
+      {state.phase === "ready" && (
+        <TVPlayer metadata={state.metadata} onExit={goHome} />
+      )}
     </div>
   );
 }
