@@ -1,371 +1,576 @@
 "use client";
 
-import { useState, useEffect, FormEvent } from "react";
+import { useState, useEffect, useRef, FormEvent } from "react";
 import { useRouter } from "next/navigation";
 
-interface VodFile {
-  name: string;
-  path: string;
-}
+interface VodFile  { name: string; path: string; }
+interface CompletedJob { job_id: string; filename: string; updated_at: string; }
 
-interface CompletedJob {
-  job_id: string;
-  filename: string;
-  updated_at: string;
-}
-
-const CATEGORIES = ["전체", "드라마", "예능", "영화", "다큐"];
-
-/** 파일명에서 표시용 제목 추출 */
 function cleanTitle(filename: string): string {
   return filename
     .replace(/\.(mp4|avi|mkv|mov|wmv)$/i, "")
     .replace(/-광고 narrative수정본.*$/i, "")
+    .replace(/\(\s*재혁\s*\)/gi, "")
     .replace(/[-_]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-/** job_id 첫 글자 기반 카드 그라디언트 */
-function cardGradient(jobId: string): string {
-  const palettes = [
-    "linear-gradient(135deg,#1a0608 0%,#2d1010 60%,#1a1a1a 100%)",
-    "linear-gradient(135deg,#06101a 0%,#0d2535 60%,#1a1a1a 100%)",
-    "linear-gradient(135deg,#0a1a06 0%,#162d10 60%,#1a1a1a 100%)",
-    "linear-gradient(135deg,#1a1506 0%,#2d2510 60%,#1a1a1a 100%)",
-    "linear-gradient(135deg,#10061a 0%,#1e0d35 60%,#1a1a1a 100%)",
-  ];
-  return palettes[jobId.charCodeAt(0) % palettes.length];
-}
+const CARD_GRADIENTS = [
+  "linear-gradient(160deg, #1B3A5C 0%, #0D1F36 100%)",
+  "linear-gradient(160deg, #3B1A1A 0%, #1F0D0D 100%)",
+  "linear-gradient(160deg, #1A3B1A 0%, #0D1F0D 100%)",
+  "linear-gradient(160deg, #3B2A1A 0%, #1F150D 100%)",
+  "linear-gradient(160deg, #2A1A3B 0%, #150D1F 100%)",
+  "linear-gradient(160deg, #1A2A3B 0%, #0D151F 100%)",
+];
+function cardGrad(id: string) { return CARD_GRADIENTS[id.charCodeAt(0) % CARD_GRADIENTS.length]; }
+
+/* 섹션별 페이지 제목 매핑 */
+const SECTION_TITLE_MAP: Record<string, string> = {
+  home:     "홈",
+  movies:   "영화/해외드라마",
+  fastvod:  "FAST VOD",
+  tv:       "TV방송",
+  anime:    "애니/다큐",
+};
+
+/* 상단 서비스 탭 (제철장터 제거) */
+const TOP_TABS = [
+  { label: "아이들나라", icon: null },
+  { label: "Disney+",  color: "#1464F6", bold: true },
+  { label: "NETFLIX",  color: "#E50914", bold: true },
+  { label: "YouTube",  color: "#FF0000", bold: true },
+  { label: "OTT/앱",  icon: null },
+  { label: "LG헬로비전 돌아보기", icon: null },
+];
 
 export default function HomePage() {
   const router = useRouter();
-  const [activeCategory, setActiveCategory] = useState("전체");
 
   const [completedJobs, setCompletedJobs] = useState<CompletedJob[]>([]);
   const [loadingJobs, setLoadingJobs]     = useState(true);
+  const [activeTab, setActiveTab]         = useState("OTT/앱");
 
-  const [showAdmin, setShowAdmin]         = useState(false);
-  const [vodFiles, setVodFiles]           = useState<VodFile[]>([]);
-  const [selectedPath, setSelectedPath]   = useState("");
-  const [submitting, setSubmitting]       = useState(false);
-  const [submitResult, setSubmitResult]   = useState<{ job_id: string } | null>(null);
-  const [submitError, setSubmitError]     = useState<string | null>(null);
+  /* 히어로 카드 hover 추적 */
+  const [hoveredHeroId, setHoveredHeroId] = useState<string | null>(null);
+  /* 캐러셀 슬라이딩 윈도우 시작 인덱스 */
+  const [heroStartIdx, setHeroStartIdx] = useState(0);
 
-  function loadCompletedJobs() {
+  /* localStorage에서 시청 진행률 읽기 */
+  const [watchProgress, setWatchProgress] = useState<Record<string, { percent: number }>>({});
+  useEffect(() => {
+    const loadProgress = () => {
+      try {
+        const data = JSON.parse(localStorage.getItem("vod_watch_progress") || "{}");
+        setWatchProgress(data);
+      } catch { /* ignore */ }
+    };
+    loadProgress();
+    // 플레이어에서 돌아올 때 (탭 포커스 복귀 시) 다시 읽기
+    const handleVisibility = () => { if (document.visibilityState === "visible") loadProgress(); };
+    document.addEventListener("visibilitychange", handleVisibility);
+    window.addEventListener("focus", loadProgress);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+      window.removeEventListener("focus", loadProgress);
+    };
+  }, []);
+
+  /* 리스트 섹션 스크롤 컨테이너 */
+  const listScrollRef = useRef<HTMLDivElement>(null);
+
+  /* URL 섹션 파라미터 → 페이지 제목 */
+  const [pageTitle, setPageTitle] = useState("영화/해외드라마");
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const section = new URLSearchParams(window.location.search).get("section") ?? "movies";
+      setPageTitle(SECTION_TITLE_MAP[section] ?? "영화/해외드라마");
+    }
+  }, []);
+
+  /* 관리자 */
+  const [showAdmin, setShowAdmin]       = useState(false);
+  const [vodFiles, setVodFiles]         = useState<VodFile[]>([]);
+  const [selectedPath, setSelectedPath] = useState("");
+  const [submitting, setSubmitting]     = useState(false);
+  const [submitResult, setSubmitResult] = useState<{ job_id: string } | null>(null);
+  const [submitError, setSubmitError]   = useState<string | null>(null);
+
+  function loadJobs() {
     setLoadingJobs(true);
     fetch("/api/backend/jobs/completed")
-      .then((r) => r.json())
-      .then((data) => setCompletedJobs(data.jobs ?? []))
+      .then(r => r.json())
+      .then(d => setCompletedJobs(d.jobs ?? []))
       .catch(() => {})
       .finally(() => setLoadingJobs(false));
   }
 
   useEffect(() => {
-    loadCompletedJobs();
+    loadJobs();
     fetch("/api/backend/vod/files")
-      .then((r) => r.json())
-      .then((data) => setVodFiles(data.files ?? []))
+      .then(r => r.json())
+      .then(d => setVodFiles(d.files ?? []))
       .catch(() => {});
   }, []);
 
-  useEffect(() => {
-    if (submitResult) {
-      loadCompletedJobs();
-      setShowAdmin(false);
-    }
-  }, [submitResult]);
+  useEffect(() => { if (submitResult) { loadJobs(); setShowAdmin(false); } }, [submitResult]);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (!selectedPath) return;
-    setSubmitError(null);
-    setSubmitting(true);
+    setSubmitError(null); setSubmitting(true);
     try {
       const res = await fetch("/api/backend/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ video_path: selectedPath }),
       });
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.detail ?? res.statusText);
-      }
-      const data = await res.json();
-      setSubmitResult(data);
+      if (!res.ok) { const d = await res.json(); throw new Error(d.detail ?? res.statusText); }
+      setSubmitResult(await res.json());
     } catch (err: unknown) {
       setSubmitError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSubmitting(false);
-    }
+    } finally { setSubmitting(false); }
   }
 
-  const featuredJob = completedJobs[0] ?? null;
+  /* 히어로 영역: 슬라이딩 윈도우 캐러셀 */
+  const HERO_VISIBLE = 5;
+  const safeStart = Math.min(heroStartIdx, Math.max(0, completedJobs.length - HERO_VISIBLE));
+  const heroCards = completedJobs.slice(safeStart, safeStart + HERO_VISIBLE);
+  const peekCard = completedJobs.length > safeStart + HERO_VISIBLE
+    ? completedJobs[safeStart + HERO_VISIBLE] : null;
+  const lastHeroId = heroCards.length > 0 ? heroCards[heroCards.length - 1].job_id : null;
+  const shouldPeek = !!(peekCard && (
+    hoveredHeroId === lastHeroId ||
+    hoveredHeroId === peekCard.job_id
+  ));
+  const listCards = completedJobs.slice(0);
+
+  /* peek 카드에 hover → 윈도우를 1칸 전진 (무한 캐러셀) */
+  const handlePeekHover = () => {
+    if (!peekCard) return;
+    const nextStart = safeStart + 1;
+    if (nextStart + HERO_VISIBLE <= completedJobs.length) {
+      setHeroStartIdx(nextStart);
+      /* 새 윈도우의 마지막 카드(= 현재 peek 카드)를 hover 상태로 유지 */
+      setHoveredHeroId(peekCard.job_id);
+    }
+  };
 
   return (
-    <div className="min-h-screen" style={{ background: "#0F0F0F" }}>
+    <div className="min-h-screen flex flex-col" style={{ background: "#0D0F18" }}>
 
-      {/* ── 상단 카테고리 탭 ──────────────────────────────────── */}
+      {/* ── 상단 서비스 탭 ─────────────────────────────────────────── */}
       <div
-        className="sticky top-0 z-40 flex items-center gap-6 px-8 py-3"
+        className="flex items-center gap-6 px-6 py-2 flex-shrink-0"
         style={{
-          background:     "rgba(15,15,15,0.96)",
-          backdropFilter: "blur(10px)",
-          borderBottom:   "1px solid rgba(255,255,255,0.06)",
+          background: "#161B2C",
+          borderBottom: "1px solid rgba(255,255,255,0.06)",
+          height: 44,
         }}
       >
-        <div className="flex items-center gap-1.5 mr-4 select-none">
-          <span className="font-black text-sm" style={{ color: "#E60012" }}>LG</span>
-          <span className="font-semibold text-sm text-white">헬로비전</span>
-        </div>
-
-        {CATEGORIES.map((cat) => (
+        {TOP_TABS.map(tab => (
           <button
-            key={cat}
-            onClick={() => setActiveCategory(cat)}
-            className="text-sm font-medium transition-colors py-1 border-b-2"
+            key={tab.label}
+            onClick={() => { if (tab.label === "OTT/앱") setActiveTab(tab.label); }}
+            className="text-sm font-semibold whitespace-nowrap transition-opacity hover:opacity-80"
             style={{
-              color:       activeCategory === cat ? "#FFFFFF" : "#666666",
-              borderColor: activeCategory === cat ? "#E60012" : "transparent",
+              color:   tab.color ?? (activeTab === tab.label ? "#FFFFFF" : "#8892A4"),
+              opacity: tab.label === "LG헬로비전 돌아보기" ? 0.7 : 1,
             }}
           >
-            {cat}
+            {tab.label}
           </button>
         ))}
-
-        <div className="ml-auto flex items-center gap-3">
-          {submitResult && (
-            <button
-              onClick={() => router.push(`/player/${submitResult.job_id}`)}
-              className="text-xs px-3 py-1.5 rounded-lg text-white"
-              style={{ background: "#E60012" }}
-            >
-              분석 완료 → 재생
-            </button>
-          )}
+        <div className="ml-auto flex items-center gap-2">
           <button
-            onClick={() => { setShowAdmin(!showAdmin); setSubmitResult(null); }}
-            className="text-xs px-3 py-1.5 rounded-lg transition-colors"
-            style={{ background: "#1E1E1E", color: "#777777" }}
+            onClick={() => setShowAdmin(!showAdmin)}
+            className="text-xs px-2 py-1 rounded"
+            style={{ background: "#252D42", color: "#8892A4" }}
           >
             + 분석 추가
-          </button>
-          <button
-            onClick={loadCompletedJobs}
-            disabled={loadingJobs}
-            className="text-xs disabled:opacity-40"
-            style={{ color: "#444444" }}
-          >
-            ↻
           </button>
         </div>
       </div>
 
-      {/* ── 관리자 패널 (숨김) ──────────────────────────────── */}
+      {/* ── 관리자 패널 ────────────────────────────────────────────── */}
       {showAdmin && (
-        <div
-          className="mx-8 mt-4 p-5 rounded-xl"
-          style={{ background: "#1A1A1A", border: "1px solid rgba(255,255,255,0.08)" }}
-        >
-          <p className="text-xs font-semibold mb-3" style={{ color: "#AAAAAA" }}>
-            영상 분석 작업 제출
-          </p>
+        <div className="mx-6 mt-3 p-4 rounded-xl flex-shrink-0"
+          style={{ background: "#1A2035", border: "1px solid rgba(255,255,255,0.08)" }}>
+          <p className="text-xs font-semibold mb-3" style={{ color: "#8892A4" }}>영상 분석 작업 제출</p>
           <form onSubmit={handleSubmit} className="flex gap-3">
             <select
               className="flex-1 rounded-lg px-3 py-2 text-sm text-white focus:outline-none"
-              style={{ background: "#252525", border: "1px solid rgba(255,255,255,0.1)" }}
-              value={selectedPath}
-              onChange={(e) => setSelectedPath(e.target.value)}
-              required
+              style={{ background: "#252D42", border: "1px solid rgba(255,255,255,0.1)" }}
+              value={selectedPath} onChange={e => setSelectedPath(e.target.value)} required
             >
               <option value="" disabled>— 영상 파일 선택 ({vodFiles.length}개) —</option>
-              {vodFiles.map((f) => (
-                <option key={f.path} value={f.path}>{f.name}</option>
-              ))}
+              {vodFiles.map(f => <option key={f.path} value={f.path}>{f.name}</option>)}
             </select>
-            <button
-              type="submit"
-              disabled={submitting || !selectedPath}
+            <button type="submit" disabled={submitting || !selectedPath}
               className="px-5 py-2 rounded-lg text-sm font-semibold text-white disabled:opacity-50 hover:opacity-90 transition-opacity"
-              style={{ background: "#E60012" }}
-            >
+              style={{ background: "#E60012" }}>
               {submitting ? "제출 중…" : "분석 시작"}
             </button>
           </form>
-          {submitError && (
-            <p className="mt-2 text-xs" style={{ color: "#f87171" }}>{submitError}</p>
-          )}
-          {submitResult && (
-            <p className="mt-2 text-xs" style={{ color: "#4ade80" }}>
-              ✅ 분석 시작됨 · Job ID: {submitResult.job_id}
-            </p>
-          )}
+          {submitError  && <p className="mt-2 text-xs" style={{ color: "#f87171" }}>{submitError}</p>}
+          {submitResult && <p className="mt-2 text-xs" style={{ color: "#4ade80" }}>✅ 분석 시작됨 · {submitResult.job_id}</p>}
         </div>
       )}
 
-      {/* ── 히어로 배너 ─────────────────────────────────────── */}
-      {featuredJob && (
-        <div
-          className="relative mx-8 mt-6 rounded-2xl overflow-hidden cursor-pointer group"
-          style={{ height: 300 }}
-          onClick={() => router.push(`/player/${featuredJob.job_id}`)}
-        >
-          <div
-            className="absolute inset-0 transition-opacity group-hover:opacity-90"
-            style={{ background: cardGradient(featuredJob.job_id) }}
-          />
-          <div className="absolute -right-16 -top-16 w-64 h-64 rounded-full opacity-10"
-            style={{ background: "#E60012" }} />
-          <div className="absolute -right-8 -bottom-8 w-40 h-40 rounded-full opacity-5"
-            style={{ background: "#E60012" }} />
+      {/* ── 메인 콘텐츠 ────────────────────────────────────────────── */}
+      <div className="flex-1 px-6 pt-4 pb-6 overflow-y-auto">
 
-          <div className="absolute inset-0 flex flex-col justify-end p-8">
-            <div className="flex items-center gap-2 mb-3">
-              <span className="text-xs font-bold px-2 py-0.5 rounded"
-                style={{ background: "#E60012", color: "#fff" }}>
-                FAST VOD
-              </span>
-              <span className="text-xs font-medium px-2 py-0.5 rounded"
-                style={{ background: "rgba(255,255,255,0.1)", color: "#ccc" }}>
-                무료
-              </span>
-              <span className="text-xs font-medium px-2 py-0.5 rounded"
-                style={{ background: "rgba(255,255,255,0.1)", color: "#ccc" }}>
-                AI 광고 매칭
-              </span>
-            </div>
-            <h2 className="text-3xl font-black text-white mb-2 leading-tight">
-              {cleanTitle(featuredJob.filename)}
-            </h2>
-            <p className="text-sm mb-5" style={{ color: "#999999" }}>
-              맥락 기반 AI 광고 오버레이 · LG 헬로비전 FAST VOD
-            </p>
-            <div className="flex gap-3" onClick={(e) => e.stopPropagation()}>
-              <button
-                onClick={() => router.push(`/player/${featuredJob.job_id}`)}
-                className="flex items-center gap-2 px-7 py-2.5 rounded-xl font-semibold text-sm text-white hover:opacity-85 transition-opacity"
-                style={{ background: "#E60012" }}
-              >
-                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M8 5v14l11-7z" />
-                </svg>
-                지금 보기
-              </button>
-              <button
-                className="flex items-center gap-2 px-7 py-2.5 rounded-xl font-semibold text-sm"
-                style={{ background: "rgba(255,255,255,0.1)", color: "#fff" }}
-              >
-                상세 정보
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── 무료 VOD 콘텐츠 그리드 ─────────────────────────── */}
-      <div className="px-8 mt-8 pb-14">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-base font-bold text-white">
-            무료 VOD
-            <span className="ml-2 text-sm font-normal" style={{ color: "#E60012" }}>
-              · 광고 지원
+        {/* 페이지 제목 (클릭한 사이드바 항목과 일치) */}
+        <h2 className="text-xl font-bold text-white mb-4">
+          {pageTitle}
+          {pageTitle === "FAST VOD" && (
+            <span className="ml-2 text-sm font-normal" style={{ color: "#8892A4" }}>
+              · 무료 광고 지원 스트리밍
             </span>
-          </h3>
-          <span className="text-xs" style={{ color: "#555555" }}>
-            {completedJobs.length}개 콘텐츠
-          </span>
-        </div>
+          )}
+        </h2>
 
-        {loadingJobs && (
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+        {/* ── 히어로 섹션 (hover → 확대/축소) ────────────────────── */}
+        {loadingJobs ? (
+          <div className="flex gap-3 mb-6">
             {[...Array(5)].map((_, i) => (
-              <div key={i} className="rounded-xl animate-pulse"
-                style={{ height: 180, background: "#1E1E1E" }} />
+              <div key={i} className="animate-pulse rounded-xl flex-1" style={{ height: 240, background: "#1A2035" }} />
             ))}
           </div>
-        )}
-
-        {!loadingJobs && completedJobs.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-24 gap-3">
-            <svg className="w-14 h-14 opacity-20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1}
-                d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-            </svg>
-            <p className="text-sm" style={{ color: "#555555" }}>분석 완료된 콘텐츠가 없습니다</p>
+        ) : completedJobs.length === 0 ? (
+          <div className="flex flex-col items-center justify-center rounded-2xl mb-6"
+            style={{ height: 240, background: "#1A2035", border: "1px solid rgba(255,255,255,0.06)" }}>
+            <p className="text-4xl mb-3">📺</p>
+            <p className="text-sm" style={{ color: "#8892A4" }}>분석 완료된 콘텐츠가 없습니다</p>
             <button onClick={() => setShowAdmin(true)}
-              className="text-xs px-4 py-2 rounded-lg mt-1 text-white"
+              className="mt-3 text-xs px-4 py-2 rounded-lg text-white"
               style={{ background: "#E60012" }}>
               + 영상 분석 시작
             </button>
           </div>
+        ) : (
+          /* 외부 래퍼: peek 카드 + 메인 카드를 하나의 hover 영역으로 묶음 */
+          <div
+            className="relative mb-6"
+            style={{ height: 260, overflow: "hidden" }}
+            onMouseLeave={() => {
+              setHoveredHeroId(null);
+              setHeroStartIdx(0);
+            }}
+          >
+            {/* ── 메인 히어로 카드 (flex 레이아웃, 항상 100% 폭) ── */}
+            <div
+              className="flex gap-3"
+              style={{
+                height: 260,
+                /* peek 카드 공간 확보: shouldPeek일 때 오른쪽 패딩 추가 */
+                paddingRight: shouldPeek ? 162 : 0,
+                transition: "padding-right 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94)",
+              }}
+            >
+              {heroCards.map((job, idx) => {
+                const isLast      = idx === heroCards.length - 1;
+                const isHovered   = hoveredHeroId === job.job_id ||
+                                    (isLast && shouldPeek);
+                const isFirst     = idx === 0;
+                const someHovered = hoveredHeroId !== null;
+
+                /* flex 비율 계산 */
+                let flexVal = 1;
+                if (isHovered) {
+                  flexVal = 3.5;
+                } else if (!someHovered && isFirst) {
+                  flexVal = 2.8;
+                }
+
+                return (
+                  <button
+                    key={job.job_id}
+                    onClick={() => router.push(`/player/${job.job_id}`)}
+                    onMouseEnter={() => setHoveredHeroId(job.job_id)}
+                    className="relative rounded-xl overflow-hidden text-left"
+                    style={{
+                      flex: flexVal,
+                      minWidth: 0,
+                      background: cardGrad(job.job_id),
+                      transition: "flex 0.45s cubic-bezier(0.25, 0.46, 0.45, 0.94), box-shadow 0.3s ease, outline 0.2s ease",
+                      outline: isHovered ? "3px solid #FFFFFF" : "3px solid transparent",
+                      outlineOffset: "-3px",
+                      borderRadius: 12,
+                      boxShadow: isHovered
+                        ? "0 12px 36px rgba(0,0,0,0.6)"
+                        : "none",
+                    }}
+                  >
+                    {/* 배경 장식 */}
+                    <div className="absolute inset-0 opacity-20"
+                      style={{ background: "radial-gradient(circle at 70% 50%, rgba(255,255,255,0.15) 0%, transparent 60%)" }} />
+
+                    {/* ─── 확대 상태: 콘텐츠 정보 오버레이 ─── */}
+                    <div
+                      className="absolute inset-0 flex flex-col justify-between p-5"
+                      style={{
+                        opacity: (isHovered || (!someHovered && isFirst)) ? 1 : 0,
+                        transition: "opacity 0.35s ease",
+                        pointerEvents: "none",
+                      }}
+                    >
+                      <div>
+                        <p className="text-xs font-medium mb-2" style={{ color: "#A0AABC" }}>
+                          금주 인기 콘텐츠
+                        </p>
+                        <h3
+                          className="font-black text-white leading-tight mb-2"
+                          style={{
+                            fontSize: isHovered ? "1.25rem" : (!someHovered && isFirst ? "1.25rem" : "0.85rem"),
+                            textShadow: "0 2px 8px rgba(0,0,0,0.5)",
+                            transition: "font-size 0.3s ease",
+                          }}
+                        >
+                          {cleanTitle(job.filename)}
+                        </h3>
+                        <p
+                          className="text-xs leading-relaxed"
+                          style={{
+                            color: "#8892A4",
+                            opacity: isHovered ? 1 : (!someHovered && isFirst ? 1 : 0),
+                            transition: "opacity 0.3s ease",
+                          }}
+                        >
+                          AI 맥락 분석 기반 광고 오버레이<br />무료로 즐기는 FAST VOD 콘텐츠
+                        </p>
+                      </div>
+                      <div
+                        className="flex items-center gap-2"
+                        style={{
+                          opacity: isHovered ? 1 : (!someHovered && isFirst ? 1 : 0),
+                          transition: "opacity 0.3s ease",
+                        }}
+                      >
+                        <span className="text-xs font-bold px-2 py-0.5 rounded"
+                          style={{ background: "#E60012", color: "#fff" }}>FAST VOD</span>
+                        <span className="text-xs px-2 py-0.5 rounded"
+                          style={{ background: "rgba(255,255,255,0.12)", color: "#ccc" }}>무료</span>
+                        <span className="text-xs px-2 py-0.5 rounded"
+                          style={{ background: "rgba(255,255,255,0.12)", color: "#ccc" }}>AI 광고</span>
+                      </div>
+                    </div>
+
+                    {/* ─── 축소 상태: 하단 제목만 표시 ─── */}
+                    <div
+                      className="absolute bottom-0 left-0 right-0 px-3 py-2.5"
+                      style={{
+                        background: "linear-gradient(to top, rgba(0,0,0,0.85) 0%, transparent 100%)",
+                        opacity: (!isHovered && (someHovered || !isFirst)) ? 1 : 0,
+                        transition: "opacity 0.3s ease",
+                        pointerEvents: "none",
+                      }}
+                    >
+                      <p className="text-xs font-bold text-white leading-tight line-clamp-2">
+                        {cleanTitle(job.filename)}
+                      </p>
+                    </div>
+                  </button>
+                );
+              })}
+
+              {/* 빈 슬롯 (카드가 5개 미만일 때) */}
+              {heroCards.length < HERO_VISIBLE && [...Array(HERO_VISIBLE - heroCards.length)].map((_, i) => (
+                <div key={`empty-${i}`} className="flex-1 rounded-xl"
+                  style={{ background: "#1A2035", border: "1px dashed rgba(255,255,255,0.08)" }} />
+              ))}
+            </div>
+
+            {/* ─── Peek 카드: position absolute → 레이아웃 흔들림 없음 ─── */}
+            {peekCard && (
+              <button
+                key={`peek-${peekCard.job_id}`}
+                onClick={() => router.push(`/player/${peekCard.job_id}`)}
+                onMouseEnter={handlePeekHover}
+                className="rounded-xl overflow-hidden text-left"
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  right: 0,
+                  width: 150,
+                  height: 260,
+                  opacity: shouldPeek ? 0.85 : 0,
+                  pointerEvents: shouldPeek ? "auto" : "none",
+                  background: cardGrad(peekCard.job_id),
+                  transition: "opacity 0.4s ease",
+                  zIndex: 2,
+                }}
+              >
+                {/* 배경 장식 */}
+                <div className="absolute inset-0 opacity-10"
+                  style={{ background: "radial-gradient(circle at 50% 30%, rgba(255,255,255,0.2) 0%, transparent 60%)" }} />
+
+                {/* 하단 제목 */}
+                <div
+                  className="absolute bottom-0 left-0 right-0 px-3 py-2.5"
+                  style={{
+                    background: "linear-gradient(to top, rgba(0,0,0,0.85) 0%, transparent 100%)",
+                    pointerEvents: "none",
+                  }}
+                >
+                  <p className="text-xs font-bold text-white leading-tight line-clamp-2">
+                    {cleanTitle(peekCard.filename)}
+                  </p>
+                </div>
+              </button>
+            )}
+          </div>
         )}
 
-        {!loadingJobs && completedJobs.length > 0 && (
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-            {completedJobs.map((job, idx) => (
-              <ContentCard
-                key={job.job_id}
-                job={job}
-                isFeatured={idx === 0}
-                onPlay={() => router.push(`/player/${job.job_id}`)}
-              />
-            ))}
+        {/* ── 콘텐츠 목록 섹션 ─────────────────────────────────────── */}
+        {!loadingJobs && listCards.length > 0 && (
+          <div>
+            {/* 섹션 헤더 */}
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-base font-bold text-white">
+                금주의 인기 TOP 10 무료 VOD
+              </h3>
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold" style={{ color: "#E60012" }}>01</span>
+                  <span className="text-xs" style={{ color: "#8892A4" }}>
+                    / {Math.min(listCards.length, 10).toString().padStart(2, "0")}
+                  </span>
+                </div>
+                {/* 스크롤 화살표 */}
+                <div className="flex gap-1">
+                  <button
+                    onClick={() => listScrollRef.current?.scrollBy({ left: -580, behavior: "smooth" })}
+                    className="w-7 h-7 rounded-full flex items-center justify-center transition-colors"
+                    style={{ background: "rgba(255,255,255,0.08)", color: "#888" }}
+                    onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.2)"; e.currentTarget.style.color = "#fff"; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; e.currentTarget.style.color = "#888"; }}
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+                    </svg>
+                  </button>
+                  <button
+                    onClick={() => listScrollRef.current?.scrollBy({ left: 580, behavior: "smooth" })}
+                    className="w-7 h-7 rounded-full flex items-center justify-center transition-colors"
+                    style={{ background: "rgba(255,255,255,0.08)", color: "#888" }}
+                    onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.2)"; e.currentTarget.style.color = "#fff"; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; e.currentTarget.style.color = "#888"; }}
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* 가로 스크롤 카드 */}
+            <div
+              ref={listScrollRef}
+              className="flex gap-3 py-5"
+              style={{
+                overflowX: "auto",
+                overflowY: "visible",
+                scrollbarWidth: "none",
+                margin: "-20px 0",
+                padding: "20px 0",
+              }}
+            >
+              {listCards.slice(0, 10).map((job, idx) => (
+                <button
+                  key={job.job_id}
+                  onClick={() => router.push(`/player/${job.job_id}`)}
+                  className="group relative rounded-xl overflow-hidden flex-shrink-0 text-left"
+                  style={{
+                    width: 265,
+                    height: 260,
+                    background: cardGrad(job.job_id),
+                    transition: "transform 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94), outline 0.2s ease, box-shadow 0.3s ease",
+                    outline: "3px solid transparent",
+                    outlineOffset: "-3px",
+                    zIndex: 1,
+                  }}
+                  onMouseEnter={e => {
+                    const el = e.currentTarget as HTMLElement;
+                    el.style.transform = "scale(1.08)";
+                    el.style.outline = "3px solid #FFFFFF";
+                    el.style.boxShadow = "0 12px 36px rgba(0,0,0,0.6)";
+                    el.style.zIndex = "20";
+
+                    /* 자동 스크롤: 카드가 화면 오른쪽/왼쪽 가장자리에 가까우면 스크롤 */
+                    const container = listScrollRef.current;
+                    if (container) {
+                      const cardRight = el.offsetLeft + el.offsetWidth;
+                      const visibleRight = container.scrollLeft + container.clientWidth;
+                      const cardLeft = el.offsetLeft;
+                      const visibleLeft = container.scrollLeft;
+
+                      if (cardRight > visibleRight - 80) {
+                        /* 오른쪽 끝 근처 → 다음 카드들 보이도록 스크롤 */
+                        container.scrollBy({ left: 280, behavior: "smooth" });
+                      } else if (cardLeft < visibleLeft + 80) {
+                        /* 왼쪽 끝 근처 → 이전 카드들 보이도록 스크롤 */
+                        container.scrollBy({ left: -280, behavior: "smooth" });
+                      }
+                    }
+                  }}
+                  onMouseLeave={e => {
+                    const el = e.currentTarget as HTMLElement;
+                    el.style.transform = "scale(1)";
+                    el.style.outline = "3px solid transparent";
+                    el.style.boxShadow = "none";
+                    el.style.zIndex = "1";
+                  }}
+                >
+                  {/* 배경 장식 */}
+                  <div className="absolute inset-0 opacity-15"
+                    style={{ background: "radial-gradient(circle at 70% 40%, rgba(255,255,255,0.12) 0%, transparent 55%)" }} />
+
+                  {/* 배지 */}
+                  <div className="absolute top-2.5 left-2.5 flex gap-1.5 z-10">
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded"
+                      style={{ background: "#E60012", color: "#fff" }}>
+                      무료
+                    </span>
+                    {idx % 3 === 0 && (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded"
+                        style={{ background: "#F59E0B", color: "#000" }}>
+                        AI매칭
+                      </span>
+                    )}
+                  </div>
+
+                  {/* 제목 */}
+                  <div className="absolute bottom-0 left-0 right-0 px-3 py-2.5"
+                    style={{ background: "linear-gradient(to top, rgba(0,0,0,0.9) 0%, transparent 100%)", paddingBottom: 12 }}>
+                    <p className="text-xs font-semibold text-white leading-tight line-clamp-2">
+                      {cleanTitle(job.filename)}
+                    </p>
+                  </div>
+
+                  {/* 시청 진행률 바 */}
+                  {(() => {
+                    const prog = watchProgress[job.job_id];
+                    const pct = prog ? Math.min(prog.percent, 100) : 0;
+                    return pct > 0 ? (
+                      <div className="absolute bottom-0 left-0 right-0" style={{ height: 3, background: "rgba(255,255,255,0.15)", zIndex: 10 }}>
+                        <div style={{
+                          height: "100%",
+                          width: `${pct}%`,
+                          background: "#E60012",
+                          borderRadius: "0 2px 2px 0",
+                        }} />
+                      </div>
+                    ) : null;
+                  })()}
+                </button>
+              ))}
+            </div>
           </div>
         )}
       </div>
     </div>
-  );
-}
-
-/* ── 콘텐츠 카드 ──────────────────────────────────────────── */
-function ContentCard({
-  job,
-  isFeatured,
-  onPlay,
-}: {
-  job: CompletedJob;
-  isFeatured: boolean;
-  onPlay: () => void;
-}) {
-  const title = cleanTitle(job.filename);
-
-  return (
-    <button onClick={onPlay} className="hv-card group text-left w-full">
-      {/* 썸네일 */}
-      <div className="relative flex items-center justify-center"
-        style={{ height: 130, background: cardGradient(job.job_id) }}>
-        <div
-          className="w-10 h-10 rounded-full flex items-center justify-center transition-all
-                     opacity-0 group-hover:opacity-100 scale-90 group-hover:scale-100"
-          style={{ background: "rgba(230,0,18,0.9)" }}
-        >
-          <svg className="w-5 h-5 text-white ml-0.5" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M8 5v14l11-7z" />
-          </svg>
-        </div>
-        <div className="absolute top-2 left-2 flex gap-1">
-          {isFeatured && (
-            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded"
-              style={{ background: "#E60012", color: "#fff" }}>추천</span>
-          )}
-          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded"
-            style={{ background: "rgba(0,0,0,0.65)", color: "#fff" }}>무료</span>
-        </div>
-        <div className="absolute top-2 right-2">
-          <span className="text-[9px] font-medium px-1.5 py-0.5 rounded"
-            style={{ background: "rgba(230,0,18,0.25)", color: "#E60012", border: "1px solid rgba(230,0,18,0.4)" }}>
-            AI
-          </span>
-        </div>
-        <div className="absolute bottom-0 left-0 right-0 h-0.5"
-          style={{ background: "rgba(255,255,255,0.06)" }} />
-      </div>
-
-      {/* 카드 정보 */}
-      <div className="p-3">
-        <p className="text-white text-xs font-semibold leading-snug line-clamp-2 mb-1">{title}</p>
-        <p className="text-[10px]" style={{ color: "#555555" }}>FAST VOD · 광고 포함</p>
-      </div>
-    </button>
   );
 }

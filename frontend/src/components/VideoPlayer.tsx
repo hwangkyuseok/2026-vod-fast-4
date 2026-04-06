@@ -45,6 +45,59 @@ export default function VideoPlayer({ metadata }: VideoPlayerProps) {
     displayWidth: 0, displayHeight: 0,
   });
 
+  // ── localStorage 시청 진행률 저장/복원 ───────────────────────────────────
+  const progressKey = metadata.job_id; // job_id를 키로 사용
+
+  // 진행률 저장 함수
+  const saveProgress = useCallback(() => {
+    const v = videoRef.current;
+    if (!v || !v.duration || v.duration === Infinity) return;
+    const progress = {
+      currentTime: v.currentTime,
+      duration: v.duration,
+      percent: (v.currentTime / v.duration) * 100,
+      updatedAt: Date.now(),
+    };
+    try {
+      const all = JSON.parse(localStorage.getItem("vod_watch_progress") || "{}");
+      all[progressKey] = progress;
+      localStorage.setItem("vod_watch_progress", JSON.stringify(all));
+    } catch { /* ignore */ }
+  }, [progressKey]);
+
+  // 주기적 저장 (2초마다) + pause/beforeunload 시 저장
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (videoRef.current && !videoRef.current.paused) saveProgress();
+    }, 2000);
+
+    const handleUnload = () => saveProgress();
+    window.addEventListener("beforeunload", handleUnload);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("beforeunload", handleUnload);
+      saveProgress(); // 컴포넌트 언마운트 시에도 저장
+    };
+  }, [saveProgress]);
+
+  // 마지막 시청 위치 복원
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const handleCanPlay = () => {
+      try {
+        const all = JSON.parse(localStorage.getItem("vod_watch_progress") || "{}");
+        const saved = all[progressKey];
+        if (saved && saved.currentTime > 0 && saved.percent < 98) {
+          v.currentTime = saved.currentTime;
+        }
+      } catch { /* ignore */ }
+    };
+    v.addEventListener("canplay", handleCanPlay, { once: true });
+    return () => v.removeEventListener("canplay", handleCanPlay);
+  }, [progressKey]);
+
   // ── seek helper (used by arrow keys, buttons, ad list click) ────────────
   const seekTo = useCallback((t: number) => {
     const v = videoRef.current;
@@ -172,7 +225,7 @@ export default function VideoPlayer({ metadata }: VideoPlayerProps) {
           onTimeUpdate={handleTimeUpdate}
           onLoadedMetadata={handleLoadedMetadata}
           onPlay={() => { setIsPlaying(true); setIsEnded(false); }}
-          onPause={() => setIsPlaying(false)}
+          onPause={() => { setIsPlaying(false); saveProgress(); }}
           onEnded={() => { setIsPlaying(false); setIsEnded(true); }}
         />
 

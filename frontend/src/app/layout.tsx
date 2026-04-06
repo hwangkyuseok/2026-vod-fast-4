@@ -14,9 +14,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="ko">
-      <body className="antialiased" style={{ background: "#0F0F0F", color: "#FFFFFF", minHeight: "100vh" }}>
+      <body className="antialiased" style={{ background: "#0D0F18", color: "#FFFFFF", minHeight: "100vh" }}>
         <Sidebar />
-        <div style={{ marginLeft: 72, minHeight: "100vh" }}>
+        <div style={{ marginLeft: 68, minHeight: "100vh" }}>
           {children}
         </div>
       </body>
