@@ -22,9 +22,14 @@ from common.logging_setup import setup_logging
 from step2_analysis import vision_yolo as _yolo
 
 # ── VLM 백엔드 선택 ──────────────────────────────────────────────────────────
+# gemini  : Google Gemini Flash API (유료)
+# qwen_hf : Qwen2.5-VL via HuggingFace Inference API (무료/저비용)
+# qwen    : 로컬 Qwen2-VL (GPU 필요)
 _VLM_BACKEND = getattr(config, "VLM_BACKEND", "qwen").lower()
 if _VLM_BACKEND == "gemini":
     from step2_analysis import vision_gemini as _vlm  # type: ignore
+elif _VLM_BACKEND == "qwen_hf":
+    from step2_analysis import vision_qwen_hf as _vlm  # type: ignore
 else:
     from step2_analysis import vision_qwen as _vlm    # type: ignore
 
