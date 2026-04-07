@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { OverlayEntry, OverlayMetadata } from "@/types/overlay";
-import AdOverlayTV from "./AdOverlayTV";
+import AdOverlay from "./AdOverlay";
 
 interface TVPlayerProps {
   metadata: OverlayMetadata;
@@ -233,7 +233,7 @@ export default function TVPlayer({ metadata, onExit }: TVPlayerProps) {
 
       {/* ── 광고 오버레이 (깔끔, score/피드백 없음) ────────────────────── */}
       {activeOverlays.map((overlay) => (
-        <AdOverlayTV
+        <AdOverlay
           key={`${overlay.matched_ad_id}-${overlay.overlay_start_time_sec}`}
           overlay={overlay}
           videoNaturalWidth={dimensions.naturalWidth}

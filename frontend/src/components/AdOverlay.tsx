@@ -51,6 +51,8 @@ export default function AdOverlay({
   const videoRef = useRef<HTMLVideoElement>(null);
   // 피드백 상태: null=미제출, 1=적합, -1=부적합
   const [feedback, setFeedback] = useState<1 | -1 | null>(null);
+  // 이미지 실제 비율 기반 컨테이너 크기 조정
+  const [fitSize, setFitSize] = useState<{ w: number; h: number } | null>(null);
 
   // 메인 영상 재생/일시정지 상태와 광고 비디오 동기화
   useEffect(() => {
@@ -86,6 +88,7 @@ export default function AdOverlay({
   // Raw position from safe-area analysis
   const rawX = overlay.coordinates_x != null ? overlay.coordinates_x * scaleX : 0;
   const rawY = overlay.coordinates_y != null ? overlay.coordinates_y * scaleY : 0;
+  // ── Size: 배너/비디오 동일한 DB 좌표 기반 + max 28% 제한 ──────────
   const rawW = (overlay.coordinates_w != null && overlay.coordinates_w > 0)
     ? overlay.coordinates_w * scaleX
     : videoDisplayWidth * 0.25;
@@ -93,12 +96,14 @@ export default function AdOverlay({
     ? overlay.coordinates_h * scaleY
     : videoDisplayHeight * 0.22;
 
-  // ── Cap size: max 28 % of video display dimensions ────────────────────
-  // Prevents very large "safe areas" from covering most of the screen.
   const MAX_W = videoDisplayWidth  * 0.28;
   const MAX_H = videoDisplayHeight * 0.28;
-  const w = Math.min(rawW, MAX_W);
-  const h = Math.min(rawH, MAX_H);
+  const baseW = Math.min(rawW, MAX_W);
+  const baseH = Math.min(rawH, MAX_H);
+
+  // 이미지 비율에 맞게 컨테이너 축소 (fitSize가 있으면 적용)
+  const w = fitSize ? fitSize.w : baseW;
+  const h = fitSize ? fitSize.h : baseH;
 
   // Keep x/y inside the video boundaries after capping the size
   const x = Math.min(rawX, videoDisplayWidth  - w);
@@ -112,13 +117,11 @@ export default function AdOverlay({
     height:         `${h}px`,
     pointerEvents:  "none",
     zIndex:         10,
-    // Softer appearance: rounded card with blur-backed border
-    borderRadius:   "16px",
+    borderRadius:   4,
     overflow:       "hidden",
-    boxShadow:      "0 4px 24px rgba(0,0,0,0.55)",
-    border:         "1px solid rgba(255,255,255,0.18)",
-    // Slight transparency so the underlying video is still visible
-    opacity:        0.92,
+    boxShadow:      "0 2px 8px rgba(0,0,0,0.4)",
+    border:         "none",
+    opacity:        1,
     // Smooth fade-in
     animation:      "adOverlayFadeIn 0.35s ease",
   };
@@ -141,76 +144,44 @@ export default function AdOverlay({
             src={overlay.ad_resource_url}
             muted          /* sound-free as requested */
             playsInline
-            style={{ width: "100%", height: "100%", objectFit: "cover" }}
+            style={{ width: "100%", height: "100%", objectFit: "contain", background: "transparent" }}
           />
         ) : (
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={overlay.ad_resource_url}
             alt={overlay.matched_ad_id}
+            onLoad={(e) => {
+              const img = e.currentTarget;
+              const natW = img.naturalWidth;
+              const natH = img.naturalHeight;
+              if (natW > 0 && natH > 0) {
+                const imgRatio = natW / natH;
+                const boxRatio = baseW / baseH;
+                let fitW: number, fitH: number;
+                if (imgRatio > boxRatio) {
+                  // 이미지가 더 넓음 → 폭 기준
+                  fitW = baseW;
+                  fitH = baseW / imgRatio;
+                } else {
+                  // 이미지가 더 높음 → 높이 기준
+                  fitH = baseH;
+                  fitW = baseH * imgRatio;
+                }
+                setFitSize({ w: fitW, h: fitH });
+              }
+            }}
             style={{
               width:      "100%",
               height:     "100%",
-              objectFit:  "contain",
-              background: "rgba(0,0,0,0.35)",
+              objectFit:  "cover",
+              background: "transparent",
             }}
           />
         )}
 
-        {/* Score badge (dev helper) */}
-        <span
-          style={{
-            position:   "absolute",
-            bottom:     4,
-            right:      4,
-            fontSize:   10,
-            background: "rgba(0,0,0,0.55)",
-            color:      "#fff",
-            padding:    "1px 4px",
-            borderRadius: 6,
-          }}
-        >
-          score {overlay.score}
-        </span>
       </div>
 
-      {/* 피드백 버튼 — pointerEvents 별도 레이어 (재생 방해 없음) */}
-      <div
-        style={{
-          position:      "absolute",
-          left:          `${x}px`,
-          top:           `${Math.max(0, y - 28)}px`,
-          display:       "flex",
-          gap:           4,
-          zIndex:        11,
-          pointerEvents: "auto",
-        }}
-      >
-        {feedback === null ? (
-          <>
-            <button
-              onClick={() => submitFeedback(1)}
-              title="적합한 광고"
-              style={feedbackBtnStyle("#16a34a")}
-            >👍</button>
-            <button
-              onClick={() => submitFeedback(-1)}
-              title="부적합한 광고"
-              style={feedbackBtnStyle("#dc2626")}
-            >👎</button>
-          </>
-        ) : (
-          <span style={{
-            fontSize: 11,
-            background: "rgba(0,0,0,0.6)",
-            color: feedback === 1 ? "#4ade80" : "#f87171",
-            padding: "2px 6px",
-            borderRadius: 6,
-          }}>
-            {feedback === 1 ? "✓ 적합" : "✗ 부적합"}
-          </span>
-        )}
-      </div>
     </>
   );
 }
