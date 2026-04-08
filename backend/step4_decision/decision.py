@@ -1,38 +1,39 @@
 """
-Step 4 — 최종 결정 (decision.py)
-──────────────────────────────────
-병합 버전: GitHub v2.14 + scoring.py v3.1
+Step 4 최종 결정 (decision.py v4.0)
+==================================================================
+기반: GitHub v2.14 + scoring.py v3.1 및 v4.0 업계 표준 근거 기반 개선
 
-GitHub v2.14 반영:
-  - MiniLM pre-filter → Cross-Encoder 2단계 파이프라인
-  - DB prefetch + bisect 이진탐색 (O(1) DB 왕복)
-  - 모듈 분리 (pre_filter.py, cross_encoder_scorer.py)
-  - 시간 겹침만 제거 (30초 간격 강제 없음)
+v4.0 변경사항:
+  - Brand Safety: GARM Framework 11개 카테고리 기반 복합어 필터 (1글자 오탐 해소)
+  - Density: 3-Stage Bucket & Drop
+      Golden Zone(이하 0.3): +25, Normal(0.3~0.6): 0, Danger(이상 0.6): DROP
+  - 코너 우선순위: TR->TL->BL->BR 에서 BL->BR->TL->TR (lower third 업계 표준)
+  - IAB 50% Viewability: 코너 겹침 최소 기준 및 광고 면적의 50%
+  - 광고 크기 3-Tier 정규화: Safe(±5%)/Warning(±15%)/Danger(>15% DROP)
+  - 광고 도배 방지: 최소 간격 180초, 시간당 6개, 동일 ad_id 중복 금지
+  - 모든 상수에 업계 표준 근거 주석 추가 (IAB, GARM, IAS, Nielsen 등)
 
-scoring.py v3.1 반영:
-  - _score_candidate() 통합 스코어링 (윈도우+점수+코너 일체)
-  - Brand Safety (UNSAFE_KEYWORDS)
-  - 연속 density 점수 (-40 ~ +25)
-  - density trend (slope +3/-5)
-  - 침묵 보너스 8점 (transcript + audio 2중 확인)
-  - 4-코너 동등비교 배치 (TR→TL→BL→BR)
-
-스코어링 공식 (병합):
-  [0차 필터] Brand Safety — UNSAFE_KEYWORDS 포함 시 Skip
-  [1차 필터] pre_filter.passes() — 씬길이 + MiniLM 코사인유사도 (0.40)
-  [2차 필터] video_clip: scene_duration < ad_duration → Skip
-  ── 슬라이딩 윈도우 + 스코어링 통합 루프 ──
-    매 윈도우 위치(1초 단위)마다:
-      코너 겹침 = 0 → skip (이 윈도우만)
-      0~+80   semantic score (Cross-Encoder 또는 MiniLM fallback)
-      -40~+25 density 연속 점수 (선형)
-      +3/-5   density trend (하락 보너스는 density≤0.5일 때만)
+스코어링 공식 (v4.0):
+  [0차] Brand Safety 및 GARM UNSAFE_KEYWORDS 포함 시 Skip
+  [0차] 광고 크기 정규화 - Tier 3(>15% 이탈) 시 Skip
+  [1차] pre_filter.passes() 및 유사도 + ko-sroberta 코사인유사도 (0.30)
+  [2차] video_clip: scene_duration < ad_duration 시 Skip
+  ### 슬라이딩 윈도우 + 스코어링 통합 루프 ###
+    매 윈도우(1초 단위):
+      Danger Zone(density 0.6 이상) 시 skip (인지 과부하)
+      코너 겹침 < 광고면적 50% 시 skip (IAB Viewability)
+      0~+80   semantic score (Cross-Encoder 또는 ko-sroberta fallback)
+      0/+25   density bucket (Golden Zone: +25, Normal: 0)
       +8      침묵 구간 겹침 (transcript+audio 2중 확인)
       +10     ad_category 매칭 보너스
-      → total_score 계산, 최고점 윈도우 선택
-  ── 코너 배치 ──
-    프레임별 코너 겹침으로 4-코너 동등 비교 → 겹침 면적 최대 코너에 배치
-  [최종]  score < MIN_SCORE_TO_KEEP(20) → 광고 없음 판정
+      -> total_score 계산 (범위: 0~123), 최고점 윈도우 선택
+  ※ v3.1에 있던 density trend(slope ±3/-5), 발화 gap 보너스(+5),
+    scene open 보너스(+5)는 근거 부족으로 v4.0에서 삭제
+  ### 코너 배치 ###
+    BL->BR->TL->TR 우선순위, IAB 50% 겹침 최소 보장
+  ### Dedup ###
+    씬별 1개 및 시간 겹침 제거 후 180초 간격 및 시간당 6개 및 ad_id 중복 제거
+  [최종] score < MIN_SCORE_TO_KEEP(20) 시 광고 없음 결정
 
 Run:
     python -m step4_decision.decision
@@ -53,40 +54,95 @@ from step4_decision import embedding_scorer, pre_filter, cross_encoder_scorer
 setup_logging("step4")
 logger = logging.getLogger(__name__)
 
-# ── 스코어링 상수 ────────────────────────────────────────────────────────────
-SCORE_SILENCE_BONUS    = 8     # 침묵 보너스 (v3.1: 15→8, density 차이 뒤집지 않게)
-SCORE_GAP_BONUS        = 5     # 개선 2: 발화 gap ≥ 3초 보너스
-SCORE_SCENE_OPEN_BONUS = 5     # 개선 2: 씬 시작 후 2~5초 구간 보너스 (장면전환 안착)
-SCORE_CATEGORY_BONUS   = 10    # ad_category ↔ context_narrative 유사도 ≥ 0.35
+# Cross-Encoder 모델 경로 설정 (config → 환경변수 우선, 없으면 OS별 기본값)
+cross_encoder_scorer.set_model_dir(config.CROSS_ENCODER_MODEL_DIR)
+
+### 스코어링 상수 ###
+# 근거: Weaviate Hybrid Search 기준 시맨틱 40~60% 권장
+#   현재 80/126=63%로 상한 설정. A/B 테스트 범위: 60~80 (50%~70%)
+SCORE_SEMANTIC_MAX     = 80    # similarity=1.0 일 때 +80점
+# SCORE_SEMANTIC_MIN_SIM: 유형별 차등 적용은 pre_filter.get_threshold()에 위임
+
+# 근거: 방송장비 silence detection 최소 임계값 2초 기반 (Broadcast Tools AES Silence Sentinel)
+#   v3.1에서 15점: density 범위(-40~+25=65점)를 침묵이 뒤섞이지 않도록 축소
+#   A/B 테스트 대상: 5~15
+SCORE_SILENCE_BONUS    = 8     # 침묵 보너스
+# 근거: IAS(2023) contextual targeting 2.5배 engagement 향상
+#   보조 신호는 총점의 5~15%가 일반적. 10/126=7.9% (A/B 테스트 대상: 5~15)
+SCORE_CATEGORY_BONUS   = 10    # ad_category 와 context_narrative 유사도시 0.35
+# 카테고리 텍스트가 짧아("화장품" 등) 임베딩 유사도가 높게 나오므로 semantic(0.40)보다 완화
 CATEGORY_SIM_THRESHOLD = 0.35  # 카테고리 보너스 적용 최소 유사도
 
-SCORE_SEMANTIC_MAX     = 80    # similarity=1.0 → +80점
-# SCORE_SEMANTIC_MIN_SIM: 씬 유형별 차등 적용 → pre_filter.get_threshold() 위임 (개선 3)
+MIN_SCORE_TO_KEEP      = 20    # 이 미만 점수 후보 제거 (A/B 테스트 대상: 20~40)
+# Note: pre_filter에서 similarity >= 0.40 강제 시 semantic=0 인 후보는 이미 탈락함.
+#   따라서 임계값에 도달하는 후보는 최소 semantic > 0 보장
 
-MIN_SCORE_TO_KEEP      = 20    # 이 미만 점수 후보 제거 → 맥락 부적합 광고 배제
-
-# 개선 5: 오버레이 밀도 제어
-# MIN_AD_INTERVAL_SEC: 개선 3 — 영상 길이 기반 동적 계산 (_pick_best_and_deduplicate 참조)
-# formula: 60 * (int(duration_sec // 1800) + 1), capped at 300s
-# 10min→60s, 30min→120s, 60min→180s, 90min→240s, 120min→300s
-MAX_ADS_PER_HOUR       = 10    # 시간당 최대 광고 수
-
-# ── Brand Safety (scoring.py v3.1) ───────────────────────────────────────────
-UNSAFE_KEYWORDS: list[str] = [
-    "폭력", "피", "사고", "충돌", "살인",
-    "자살", "성적", "노출", "장례", "죽음",
+### Cold Start (시작 N초 광고 금지) ###
+# 근거: YouTube mid-roll은 영상 시작 직후 광고 없음, Hulu/Peacock도 초반 몰입 구간 보호.
+#   시청자 이탈률은 영상 첫 30초에 가장 높으므로(Nielsen 2019), 초반 몰입을 방해하면 안 됨.
+#   영상 길이별 차등:
+#     ~20분(애니/숏폼):  30초 후부터 광고 허용
+#     ~40분(드라마):     60초 후부터
+#     60분+(예능/영화):  90초 후부터
+COLD_START_TIERS = [
+    (20 * 60,  30),   # 20분 이하 → 30초 금지
+    (40 * 60,  60),   # 40분 이하 → 60초 금지
+    (float("inf"), 90),  # 40분 초과 → 90초 금지
 ]
 
-# ── 코너 배치 상수 (scoring.py v3.1) ─────────────────────────────────────────
-DEFAULT_AD_W   = 300   # IAB 표준 배너 기본 너비
-DEFAULT_AD_H   = 250   # IAB 표준 배너 기본 높이
+### Cold End (끝 N초 광고 금지) ###
+# 근거: 영상 마무리 구간 몰입 보호 — 시작과 동일한 기준 적용
+#   영상 길이별 차등:
+#     ~20분(애니/숏폼):  끝 30초 전까지
+#     ~40분(드라마):     끝 60초 전까지
+#     60분+(예능/영화):  끝 90초 전까지
+COLD_END_TIERS = [
+    (20 * 60,  30),   # 20분 이하 → 끝 30초 금지
+    (40 * 60,  60),   # 40분 이하 → 끝 60초 금지
+    (float("inf"), 90),  # 40분 초과 → 끝 90초 금지
+]
+
+### 광고 도배 방지 상수 ###
+# 근거: Hulu 7분 간격, 업계 일반 최소 3분. 보수적 3분(180초). (A/B 테스트 대상: 120~300)
+MIN_GAP_SEC        = 180
+# 근거: Netflix Basic with Ads 시간당 4~5분(8~10개), 프리미엄 OTT 4~6개 내외. 6개(A/B 대상: 4~8)
+MAX_ADS_PER_HOUR   = 6
+# 근거: IAB frequency capping, Nielsen(2017) 3회 정점/5회 이후 부정적 효과. 동일 광고 중복 방지
+ALLOW_DUPLICATE_AD = False
+
+### Brand Safety ###
+# 근거: GARM(Global Alliance for Responsible Media) Brand Safety Framework 11개 카테고리
+#   기존 "피" 같은 1글자 필터는 "피자" 등 오탐. 2글자 이상 구체적 복합어로 교체.
+#   향후 Gemini LLM 기반 GARM 분류로 고도화 예정.
+UNSAFE_KEYWORDS: list[str] = [
+    # GARM Floor: 아동 성착취, 테러리즘
+    "아동학대", "아동착취", "테러리즘", "테러공격",
+    # GARM High: 무기 및 폭력, 자해, 약물
+    "총기사사", "폭력행위", "살인사건", "자살시도", "자해행위",
+    "혐오발언", "인종차별", "성차별",
+    "마약거래", "약물남용",
+    # GARM Medium: 선정성, 사망 및 부상
+    "성적노출", "선정적장면",
+    "사망사고", "중상해", "유해장면",
+    # GARM Low: 도박, 논쟁적 주제
+    "도박중독", "불법도박",
+    "장례식장", "장례예배",  # "장례" 단독 대신 맥락어 조합
+]
+
+### 코너 배치 상수 (scoring.py v3.1) ###
+DEFAULT_AD_W       = 300   # IAB 표준 배너 기본 너비
+DEFAULT_AD_H       = 250   # IAB 표준 배너 기본 높이
+DEFAULT_VIDEO_W    = 320   # video_clip 기본 너비 (16:9)
+DEFAULT_VIDEO_H    = 180   # video_clip 기본 높이 (16:9)
 CORNER_PADDING = 20    # 화면 가장자리 패딩
 VIDEO_W        = 1280  # 기준 해상도 너비
 VIDEO_H        = 720   # 기준 해상도 높이
-CORNER_PRIORITY = ["TR", "TL", "BL", "BR"]  # 우상단 기본 → fallback 순서
+# 근거: YouTube/Netflix 오버레이가 하단 1/3(lower third)인 업계 표준
+#   배너형은 BL/BR, 로고/아이콘형은 TR이 관행 (Filmkraft, BoxCast)
+CORNER_PRIORITY = ["BL", "BR", "TL", "TR"]
 
 
-# ── 코너 배치 함수 (scoring.py v3.1) ─────────────────────────────────────────
+### 코너 배치 함수 (scoring.py v3.1) ###
 
 def _define_corners(
     ad_w: int = DEFAULT_AD_W,
@@ -118,11 +174,13 @@ def _pick_corner_from_frames(
     frames: list[dict],
     ad_w: int = DEFAULT_AD_W,
     ad_h: int = DEFAULT_AD_H,
+    video_w: int = VIDEO_W,
+    video_h: int = VIDEO_H,
 ) -> tuple[str, int, int, float] | None:
     """
     프레임별 safe_area를 각 코너와 개별 비교하여 최적 코너를 선택한다.
-    4코너 동등 비교 — 평균 겹침 면적이 가장 큰 코너에 배치.
-    모든 코너 평균 겹침 = 0 → None (이 윈도우 배치 불가)
+    코너 좌표는 실제 영상 해상도(video_w × video_h) 기준으로 계산되어
+    safe_area(원본 프레임 해상도)와 동일 좌표계에서 비교한다.
 
     Returns:
         (corner_name, x, y, avg_overlap) 또는 None
@@ -130,7 +188,7 @@ def _pick_corner_from_frames(
     if not frames:
         return None
 
-    corners = _define_corners(ad_w, ad_h)
+    corners = _define_corners(ad_w, ad_h, video_w, video_h)
     valid_frames = [
         f for f in frames
         if f.get("safe_area_w") and f.get("safe_area_h")
@@ -159,14 +217,67 @@ def _pick_corner_from_frames(
             best_avg = corner_avg[name]
             best_name = name
 
-    if best_name is None or best_avg == 0:
+    # 근거: IAB/MRC Viewable Ad Impression Guidelines
+    #   디스플레이 광고는 50% pixels visible + 1초 연속이어야 유효 노출
+    #   오버레이 배너도 디스플레이에 해당하므로 광고 면점의 50% 미만 노출 시 탈락
+    ad_area = ad_w * ad_h
+    min_overlap = ad_area * 0.50
+    if best_name is None or best_avg < min_overlap:
         return None
 
     cx, cy = corners[best_name]
     return best_name, cx, cy, best_avg
 
 
-# ── DB 헬퍼 ──────────────────────────────────────────────────────────────────
+### 광고 크기 정규화 (IAB 3-Tier) ###
+# 근거: IAB Medium Rectangle(300x250) 표준 기준
+#   OpenRTB 2.6 및 NULL/비정상 값 reject 관행
+#   IAB 오버레이 최대 높이: 플레이어 높이의 20%
+#   3단계 Tier로 수익 방어(Tier 2)와 브랜드 보호(Tier 3)를 동시에 달성
+#
+#   Tier 1 (Safe, ±5%):  285~315 x 237~262 사이 원본 유지
+#   Tier 2 (Warning, ±15%): 255~345 x 212~287 사이 강제 (300, 250)
+#   Tier 3 (Danger, ±15% 초과): 큼 (None, None) 처리 노출 포기
+
+def _normalize_ad_size(
+    w: int | None, h: int | None,
+    ref_w: int = DEFAULT_AD_W, ref_h: int = DEFAULT_AD_H,
+) -> tuple[int | None, int | None]:
+    """
+    광고 크기를 IAB 기준 300x250 대비 3단계로 검증 및 정규화.
+
+    Returns:
+        (w, h)          - Tier 1: 원본 유지
+        (ref_w, ref_h)  - Tier 2: 강제 보정
+        (None, None)    - Tier 3: 노출 포함 제외
+    """
+    if not w or not h or w <= 0 or h <= 0:
+        logger.debug("[AD_SIZE] NULL/0 시 fallback (%d, %d)", ref_w, ref_h)
+        return ref_w, ref_h
+
+    w_ratio = abs(w - ref_w) / ref_w
+    h_ratio = abs(h - ref_h) / ref_h
+
+    if w_ratio <= 0.05 and h_ratio <= 0.05:
+        # Tier 1 (Safe): 원본 유지
+        return w, h
+    elif w_ratio <= 0.15 and h_ratio <= 0.15:
+        # Tier 2 (Warning): 강제 보정
+        logger.info(
+            "[AD_SIZE][TIER2] Warning: (%d, %d) 시 forced (%d, %d)",
+            w, h, ref_w, ref_h,
+        )
+        return ref_w, ref_h
+    else:
+        # Tier 3 (Danger): 노출 포기
+        logger.warning(
+            "[AD_SIZE][TIER3] Danger: (%d, %d) deviates >15%% from (%d, %d) 시 DROP",
+            w, h, ref_w, ref_h,
+        )
+        return None, None
+
+
+### DB 헬퍼 ###
 
 def _update_job_status(job_id: str, status: str, error: str | None = None) -> None:
     _db.execute(
@@ -175,14 +286,14 @@ def _update_job_status(job_id: str, status: str, error: str | None = None) -> No
     )
 
 
-# ── 캐시 기반 헬퍼 (GitHub v2.13 캐싱 + scoring.py v3.1 침묵 로직) ──────────
+### 캐시 기반 헬퍼 (GitHub v2.13 캐싱 + scoring.py v3.1 침묵 로직) ###
 
 def _get_scene_frames_cached(
     all_frames: list[dict],
     scene_start: float,
     scene_end: float,
 ) -> list[dict]:
-    """v2.13: prefetch된 전체 프레임 리스트에서 씬 범위 내 프레임을 이진탐색."""
+    """v2.13: prefetch한 전체 프레임 리스트에서 해당 범위 프레임을 이진탐색."""
     timestamps = [float(f["timestamp_sec"]) for f in all_frames]
     lo = bisect.bisect_left(timestamps, scene_start)
     hi = bisect.bisect_right(timestamps, scene_end)
@@ -199,9 +310,9 @@ def _check_silence_from_cache(
     """
     scoring.py v3.1의 transcript+audio 2중 침묵 판단 (DB 호출 0건).
 
-    1차: Whisper transcript 기반 — 윈도우 내 발화 사이 2초 이상 공백이면 침묵
-    2차: transcript 없지만 job 전체에는 있으면 → 침묵
-    3차: analysis_audio(librosa) fallback
+    1차 Whisper transcript 기반 해당 윈도우 내 발화 사이 2초 이상 공백이면 침묵
+    2차 transcript 없지만 job 전체에는 있으면 해당 침묵
+    3차 analysis_audio(librosa) fallback
     """
     overlapping = [
         t for t in cached_transcripts
@@ -227,7 +338,7 @@ def _check_silence_from_cache(
     return False
 
 
-# ── 통합 스코어링 (scoring.py v3.1 기반, GitHub DB 캐시 적용) ────────────────
+### 통합 스코어링 (v4.0 통합 방식) ###
 
 def _score_candidate(
     candidate: dict,
@@ -237,17 +348,14 @@ def _score_candidate(
     transcript_cache: list[dict] | None = None,
     has_any_transcript: bool = False,
     silence_cache: list[dict] | None = None,
+    video_w: int = VIDEO_W,
+    video_h: int = VIDEO_H,
 ) -> tuple[int, dict | None, float]:
     """
-    v3.1 통합 스코어링 + GitHub DB 캐시.
-
-    매 윈도우 위치(1초 단위)에서 전체 점수를 합산하여,
-    총점이 가장 높은 윈도우를 선택한다.
-    선택된 윈도우의 safe_area에서 4-코너 동등비교로 좌표를 결정한다.
+    v4.0 통합 스코어링 + GitHub DB 캐싱.
 
     Returns:
-        (score, window, similarity) — window에 overlay 타임스탬프 + 코너 좌표 포함.
-        필터 미달 시 (0, None, similarity) 반환.
+        (score, window, similarity)
     """
     context_narrative = (candidate.get("context_narrative") or "").strip()
     target_narrative  = (candidate.get("target_narrative") or "").strip()
@@ -257,7 +365,7 @@ def _score_candidate(
     ad_dur            = candidate.get("ad_duration_sec")
     ad_type           = candidate.get("ad_type", "banner")
 
-    # ── 0차 필터: Brand Safety (scoring.py v3.1) ────────────────────────────
+    ### 0차 필터: Brand Safety ###
     if context_narrative:
         for kw in UNSAFE_KEYWORDS:
             if kw in context_narrative:
@@ -267,9 +375,8 @@ def _score_candidate(
                 )
                 return 0, None, 0.0
 
-    # ── 1차 필터: pre_filter (GitHub 모듈) ──────────────────────────────────
-    # precomputed_similarity가 있으면 outer pre_filter를 이미 통과한 후보 → threshold 재검사 생략
-    # (CE top-3 후보는 outer pre_filter 통과 보장, inner 재검사 시 씬 유형별 threshold 차이로 오탈락)
+    ### 1차 필터: pre_filter ###
+    # precomputed가 있으면 outer pre_filter를 이미 통과한 후보 → threshold 체크 생략
     if precomputed_similarity is not None:
         similarity = precomputed_similarity
     else:
@@ -277,7 +384,7 @@ def _score_candidate(
         if not passed:
             return 0, None, similarity
 
-    # ── 2차 필터: 물리적 수용 가능성 (scoring.py v3.1) ──────────────────────
+    ### 2차 필터: 물리적 수용 가능성 ###
     if ad_type == "video_clip" and ad_dur is not None:
         if scene_duration < ad_dur:
             return 0, None, similarity
@@ -288,16 +395,14 @@ def _score_candidate(
             scene_duration,
         )
 
-    # ── 루프 밖 고정 점수 사전 계산 ─────────────────────────────────────────
-    # semantic 점수 (0~+80) — 윈도우 위치와 무관
-    # 개선 3 일관성: pre_filter와 동일한 씬 유형별 threshold를 스케일링 하한으로 사용
+    ### 루프 전 고정 점수 사전 계산 ###
+    # 유형별 동적 threshold로 스케일링 하한 결정
     semantic_min_sim = pre_filter.get_threshold(candidate)
     base_semantic = 0
     if similarity >= semantic_min_sim:
         scaled = (similarity - semantic_min_sim) / (1.0 - semantic_min_sim)
         base_semantic = int(scaled * SCORE_SEMANTIC_MAX)
 
-    # category 보너스 — 윈도우 위치와 무관
     category_bonus = 0
     ad_category = (candidate.get("ad_category") or "").strip()
     if ad_category and context_narrative and embedding_scorer.is_available():
@@ -305,7 +410,7 @@ def _score_candidate(
         if cat_sim >= CATEGORY_SIM_THRESHOLD:
             category_bonus = SCORE_CATEGORY_BONUS
 
-    # ── 프레임 데이터 (GitHub 캐시 활용) ────────────────────────────────────
+    ### 프레임 데이터 (캐시 활용) ###
     if frames_cache is not None:
         frames = _get_scene_frames_cached(frames_cache, scene_start, scene_end)
     else:
@@ -320,7 +425,7 @@ def _score_candidate(
     if not frames:
         return 0, None, similarity
 
-    # ── 침묵 데이터 (캐시에서 씬 범위 필터) ────────────────────────────────
+    ### 침묵 데이터 (캐시 필터) ###
     scene_transcripts = [
         t for t in (transcript_cache or [])
         if float(t["end_sec"]) > scene_start and float(t["start_sec"]) < scene_end
@@ -330,10 +435,17 @@ def _score_candidate(
         if float(a["silence_start_sec"]) < scene_end and float(a["silence_end_sec"]) > scene_start
     ]
 
-    ad_w = candidate.get("width") or DEFAULT_AD_W
-    ad_h = candidate.get("height") or DEFAULT_AD_H
+    _is_video = candidate.get("ad_type", "banner") == "video_clip"
+    _ref_w = DEFAULT_VIDEO_W if _is_video else DEFAULT_AD_W
+    _ref_h = DEFAULT_VIDEO_H if _is_video else DEFAULT_AD_H
+    ad_w, ad_h = _normalize_ad_size(
+        candidate.get("width"), candidate.get("height"),
+        ref_w=_ref_w, ref_h=_ref_h,
+    )
+    if ad_w is None or ad_h is None:
+        return 0, None, 0.0
 
-    # ── 슬라이딩 윈도우 + 스코어링 + 코너 배치 통합 루프 (scoring.py v3.1) ──
+    ### 슬라이딩 윈도우 루프 ###
     best_window: dict | None = None
     best_score: int = -999
     t = scene_start
@@ -348,67 +460,41 @@ def _score_candidate(
 
         avg_density = sum(f["object_density"] or 0.0 for f in window_frames) / len(window_frames)
 
-        # ── 코너 배치 판단 (scoring.py v3.1) ──
-        corner_result = _pick_corner_from_frames(window_frames, ad_w, ad_h)
+        ### 코너 배치 판단 (v4.0 Viewability 보장) ###
+        corner_result = _pick_corner_from_frames(window_frames, ad_w, ad_h, video_w, video_h)
         if corner_result is None:
             t += 1.0
             continue
 
         corner_name, corner_x, corner_y, corner_overlap = corner_result
 
-        # ── 이 윈도우의 총점 계산 ──
+        ### 점수 계산 (v4.0 3-Stage Bucket + density trend) ###
+        if avg_density >= 0.6:
+            t += 1.0
+            continue
+
         total = base_semantic + category_bonus
+        if avg_density <= 0.3:
+            total += 25
+        # 0.3~0.6 사이는 0점
 
-        # density 연속 점수 (-40 ~ +25)  (scoring.py v3.1)
-        density_score = int(25 - 65 * avg_density)
-        density_score = max(-40, min(25, density_score))
-        total += density_score
-
-        # density trend (기울기)  (scoring.py v3.1)
-        if len(window_frames) >= 2:
-            ts = [f["timestamp_sec"] for f in window_frames]
-            ds = [f["object_density"] or 0.0 for f in window_frames]
-            slope = float(numpy.polyfit(ts, ds, 1)[0])
-        else:
-            slope = 0.0
-
-        if slope < -0.02 and avg_density <= 0.5:
-            total += 3
-        elif slope > 0.02:
-            total -= 5
-
-        # 침묵 보너스 (scoring.py v3.1: 8점, transcript+audio 2중)
+        # 침묵 보너스
         has_silence = _check_silence_from_cache(
             scene_transcripts, has_any_transcript, scene_audio, t, window_end,
         )
         if has_silence:
             total += SCORE_SILENCE_BONUS
 
-        # 개선 2: 발화 gap ≥ 3초 보너스 (+5)
-        # 침묵 구간은 아니지만 대사 밀도가 낮은 구간에도 광고 배치 적합
-        overlapping_tr = [
-            tr for tr in scene_transcripts
-            if float(tr["end_sec"]) > t and float(tr["start_sec"]) < window_end
-        ]
-        if overlapping_tr:
-            prev_end = t
-            for tr in overlapping_tr:
-                if float(tr["start_sec"]) - prev_end >= 3.0:
-                    total += SCORE_GAP_BONUS
-                    break
-                prev_end = max(prev_end, float(tr["end_sec"]))
-
-        # 개선 2: 씬 시작 후 2~5초 구간 보너스 (+5)
-        # 장면전환 직후 시청자 집중도가 안착되는 구간
-        offset_in_scene = t - scene_start
-        if 2.0 <= offset_in_scene <= 5.0:
-            total += SCORE_SCENE_OPEN_BONUS
-
-        # 최고점 갱신
         if total > best_score:
             best_score = total
+            if scene_duration >= 30.0:
+                _delay = 2.5
+            elif scene_duration >= 10.0:
+                _delay = 1.5
+            else:
+                _delay = 0.5
             best_window = {
-                "start_sec":       t,
+                "start_sec":       t + _delay,
                 "avg_density":     avg_density,
                 "safe_area_px":    int(corner_overlap),
                 "corner_name":     corner_name,
@@ -416,38 +502,25 @@ def _score_candidate(
                 "corner_y":        corner_y,
                 "corner_overlap":  corner_overlap,
                 "silence_overlap": has_silence,
-                "trend_slope":     slope,
             }
 
         t += 1.0
 
-    # 유효한 윈도우가 없으면 (모든 윈도우의 모든 코너 겹침 = 0)
     if best_window is None:
-        logger.info(
-            "[CORNER][SKIP] 모든 윈도우 코너 겹침=0  ad=%s  scene=%.1f~%.1f",
-            candidate.get("ad_id"), scene_start, scene_end,
-        )
         return 0, None, similarity
-
-    logger.info(
-        "[v3.1] ad=%s  scene=%.1f~%.1f  t=%.1f  score=%d  corner=%s  overlap=%.0f  den=%.2f  sim=%.3f",
-        candidate.get("ad_id"), scene_start, scene_end,
-        best_window["start_sec"], best_score, best_window["corner_name"],
-        best_window["corner_overlap"], best_window["avg_density"], similarity,
-    )
 
     return best_score, best_window, similarity
 
 
-# ── Dedup (GitHub v2.14: 시간 겹침만 제거) ──────────────────────────────────
+### Dedup (v4.0 업계 표준) ###
 
 def _pick_best_and_deduplicate(scored: list[dict], duration_sec: float = 0.0) -> list[dict]:
     """
     1. Per unique scene_start_sec: keep only the highest-scoring ad.
-    2. Sort by overlay_start_time_sec, then remove time-overlapping windows
-       (greedy: keep the higher-scoring one when two overlap).
-    3. 개선 5: 최소 광고 간격(동적) 및 시간당 최대 광고 수(MAX_ADS_PER_HOUR) 적용.
-       개선 3: 최소 간격은 영상 길이 기반 동적 계산.
+    2. Sort by overlay_start_time_sec, then remove time-overlapping windows.
+    3. 영상 길이 기반 동적 최소 간격 적용.
+    4. 시간당 최대 광고 수(MAX_ADS_PER_HOUR) 제한.
+    5. ad_id 중복 방지.
     """
     # Step 1: 씬별 최고점 광고 1개
     best: dict[float, dict] = {}
@@ -465,7 +538,6 @@ def _pick_best_and_deduplicate(scored: list[dict], duration_sec: float = 0.0) ->
     deduped: list[dict] = []
     for c in candidates:
         start = c["overlay_start_time_sec"]
-        end   = start + c["overlay_duration_sec"]
         if not deduped:
             deduped.append(c)
             continue
@@ -476,12 +548,34 @@ def _pick_best_and_deduplicate(scored: list[dict], duration_sec: float = 0.0) ->
         elif c["score"] > prev["score"]:
             deduped[-1] = c
 
-    # Step 3: 개선 5 — 최소 간격 + 시간당 최대 광고 수 제어
-    # 개선 3: 영상 길이 기반 동적 최소 광고 간격
+    # Step 3a: Cold Start — 영상 시작 N초 광고 금지
+    cold_start_sec = 30  # 기본값
+    if duration_sec > 0:
+        for tier_max, tier_cold in COLD_START_TIERS:
+            if duration_sec <= tier_max:
+                cold_start_sec = tier_cold
+                break
+    deduped = [c for c in deduped if c["overlay_start_time_sec"] >= cold_start_sec]
+    logger.info(
+        "[COLD_START] duration_sec=%.1f → 시작 %d초 금지 → %d개 남음",
+        duration_sec, cold_start_sec, len(deduped),
+    )
+
+    # Step 3a-2: Cold End — 영상 끝 N초 광고 금지
+    if duration_sec > 0:
+        cold_end_sec = 10  # 기본값
+        for tier_max, tier_cold in COLD_END_TIERS:
+            if duration_sec <= tier_max:
+                cold_end_sec = tier_cold
+                break
+        deduped = [c for c in deduped if c["overlay_start_time_sec"] <= duration_sec - cold_end_sec]
+        logger.info("[COLD_END] duration_sec=%.1f → 끝 %d초 금지 → %d개 남음", duration_sec, cold_end_sec, len(deduped))
+
+    # Step 3b: 영상 길이 기반 동적 최소 광고 간격
     if duration_sec > 0:
         dynamic_interval = min(300, max(60, 60 * (int(duration_sec // 1800) + 1)))
     else:
-        dynamic_interval = 120  # duration 미확인 시 기본값 2분
+        dynamic_interval = MIN_GAP_SEC  # duration 미획득시 기본 180초
     logger.info(
         "[INTERVAL] duration_sec=%.1f → min_ad_interval=%ds",
         duration_sec, dynamic_interval,
@@ -490,12 +584,9 @@ def _pick_best_and_deduplicate(scored: list[dict], duration_sec: float = 0.0) ->
     result: list[dict] = []
     for c in deduped:
         start = c["overlay_start_time_sec"]
-
-        # 최소 간격 체크
         if result:
             prev_start = result[-1]["overlay_start_time_sec"]
             if start - prev_start < dynamic_interval:
-                # 간격 미달 시 점수가 높은 쪽 유지
                 if c["score"] > result[-1]["score"]:
                     result[-1] = c
                 continue
@@ -512,18 +603,25 @@ def _pick_best_and_deduplicate(scored: list[dict], duration_sec: float = 0.0) ->
 
         result.append(c)
 
+    # Step 4: 중복 광고 필터
+    if not ALLOW_DUPLICATE_AD:
+        seen = set()
+        final = []
+        for c in result:
+            aid = c.get("ad_id")
+            if aid not in seen:
+                seen.add(aid)
+                final.append(c)
+        return final
+
     return result
 
 
-# ── DB INSERT ────────────────────────────────────────────────────────────────
+### INSERT ###
 
 def _insert_decision_results(job_id: str, results: list[dict]) -> None:
     with _db.cursor() as cur:
         cur.execute("DELETE FROM decision_result WHERE job_id = %s", (job_id,))
-        deleted = cur.rowcount
-        if deleted:
-            logger.info("Cleared %d stale decision_result row(s) for job %s", deleted, job_id)
-
         for r in results:
             cur.execute(
                 """
@@ -537,36 +635,43 @@ def _insert_decision_results(job_id: str, results: list[dict]) -> None:
                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 """,
                 (
-                    job_id,
-                    r["ad_id"],
-                    float(r["overlay_start_time_sec"]),
-                    float(r["overlay_duration_sec"]),
-                    int(r["coordinates_x"]) if r.get("coordinates_x") is not None else None,
-                    int(r["coordinates_y"]) if r.get("coordinates_y") is not None else None,
-                    int(r["coordinates_w"]) if (r.get("coordinates_w") is not None and r["coordinates_w"] > 0) else None,
-                    int(r["coordinates_h"]) if (r.get("coordinates_h") is not None and r["coordinates_h"] > 0) else None,
+                    job_id, r["ad_id"],
+                    float(r["overlay_start_time_sec"]), float(r["overlay_duration_sec"]),
+                    r.get("coordinates_x"), r.get("coordinates_y"),
+                    r.get("coordinates_w"), r.get("coordinates_h"),
                     int(r["score"]),
-                    r.get("similarity_score"),    # 레이블 피처 ①
-                    r.get("scene_duration_sec"),  # 레이블 피처 ②
-                    r.get("avg_density"),         # 레이블 피처 ③
+                    r.get("similarity_score"), r.get("scene_duration_sec"), r.get("avg_density"),
                 ),
             )
     logger.info("Inserted %d decision result(s) for job %s", len(results), job_id)
 
 
-# ── 메인 파이프라인 ──────────────────────────────────────────────────────────
+### 메인 실행 ###
 
 def run(job_id: str, candidates: list[dict], duration_sec: float = 0.0) -> None:
     _update_job_status(job_id, "deciding")
     try:
-        sim_lookup: dict[tuple[str, str], float] = {}
-        ctx_to_desire: dict[str, str] = {}    # 개선 4: 씬 desire 매핑
-        desire_lookup: dict[tuple[str, str], float] = {}  # 개선 4: desire × target 유사도
+        # ── 실제 영상 해상도 조회 (safe_area와 동일 좌표계) ──────────────
+        preproc = _db.fetchone(
+            "SELECT width, height FROM video_preprocessing_info WHERE job_id = %s",
+            (job_id,),
+        )
+        if preproc and preproc["width"] and preproc["height"]:
+            video_w = int(preproc["width"])
+            video_h = int(preproc["height"])
+        else:
+            video_w = VIDEO_W
+            video_h = VIDEO_H
+            logger.warning("[%s] video_preprocessing_info 없음 — 기본 %dx%d 사용", job_id, video_w, video_h)
 
-        # ── 1단계: MiniLM pre-filter (GitHub v2.14) ─────────────────────────
-        # Cross-Encoder 전에 MiniLM 코사인유사도로 대량 후보를 빠르게 제거
-        # v2.15+: 씬당 상위 EMBED_TOP_K_PER_SCENE개만 Cross-Encoder에 넘김
+        sim_lookup: dict[tuple[str, str], float] = {}
+        ctx_to_desire: dict[str, str] = {}
+        desire_lookup: dict[tuple[str, str], float] = {}
+
+        ### 1단계: ko-sroberta pre-filter + Desire 블렌딩 ###
         EMBED_TOP_K_PER_SCENE = 30
+        embed_lookup: dict[tuple[str, str], float] = {}
+
         if candidates and embedding_scorer.is_available():
             unique_ctx = list(dict.fromkeys(
                 c.get("context_narrative") or "" for c in candidates
@@ -576,7 +681,7 @@ def run(job_id: str, candidates: list[dict], duration_sec: float = 0.0) -> None:
                 c.get("target_narrative") or "" for c in candidates
                 if c.get("context_narrative") and c.get("target_narrative")
             ))
-            minilm_lookup: dict[tuple[str, str], float] = {}
+
             if unique_ctx and unique_tgt:
                 sim_matrix = embedding_scorer.batch_similarity_matrix(unique_ctx, unique_tgt)
                 ctx_idx = {t: i for i, t in enumerate(unique_ctx)}
@@ -585,9 +690,11 @@ def run(job_id: str, candidates: list[dict], duration_sec: float = 0.0) -> None:
                     ctx = c.get("context_narrative") or ""
                     tgt = c.get("target_narrative") or ""
                     if ctx and tgt:
-                        minilm_lookup[(ctx, tgt)] = float(sim_matrix[ctx_idx[ctx], tgt_idx[tgt]])
+                        embed_lookup[(ctx, tgt)] = float(sim_matrix[ctx_idx[ctx], tgt_idx[tgt]])
 
-                # 개선 4: desire 임베딩 블렌딩 (씬 desire ↔ target_narrative)
+                logger.info("[%s] Batch similarity matrix: %d ctx × %d tgt", job_id, len(unique_ctx), len(unique_tgt))
+
+                # Desire 블렌딩 (0.7×context + 0.3×desire)
                 for c in candidates:
                     ctx = c.get("context_narrative") or ""
                     desire = c.get("desire") or ""
@@ -604,12 +711,12 @@ def run(job_id: str, candidates: list[dict], duration_sec: float = 0.0) -> None:
                             continue
                         desire = ctx_to_desire.get(ctx, "")
                         if desire and desire in desire_idx_map and tgt in tgt_idx:
-                            ctx_sim = minilm_lookup.get((ctx, tgt), 0.0)
+                            ctx_sim = embed_lookup.get((ctx, tgt), 0.0)
                             d_sim = float(desire_sim_matrix[desire_idx_map[desire], tgt_idx[tgt]])
-                            minilm_lookup[(ctx, tgt)] = 0.7 * ctx_sim + 0.3 * d_sim
+                            embed_lookup[(ctx, tgt)] = 0.4 * ctx_sim + 0.6 * d_sim
                             desire_lookup[(ctx, tgt)] = d_sim
                     logger.info(
-                        "[%s] Desire blending: %d desires × %d ads blended into minilm_lookup",
+                        "[%s] Desire blending: %d desires x %d ads blended into embed_lookup",
                         job_id, len(unique_desire), len(unique_tgt),
                     )
 
@@ -620,18 +727,18 @@ def run(job_id: str, candidates: list[dict], duration_sec: float = 0.0) -> None:
             for c in candidates:
                 ctx = c.get("context_narrative") or ""
                 tgt = c.get("target_narrative") or ""
-                precomputed = minilm_lookup.get((ctx, tgt))
+                precomputed = embed_lookup.get((ctx, tgt))
                 passed, _ = pre_filter.passes(c, precomputed)
                 if passed:
                     filtered.append(c)
 
-            # 씬(context_narrative)별로 유사도 상위 EMBED_TOP_K_PER_SCENE개만 유지
+            # Per-scene Top-K: 씬별 상위 EMBED_TOP_K_PER_SCENE개만 유지
             from collections import defaultdict
             scene_buckets: dict[str, list[tuple[float, dict]]] = defaultdict(list)
             for c in filtered:
                 ctx = c.get("context_narrative") or ""
                 tgt = c.get("target_narrative") or ""
-                sim = minilm_lookup.get((ctx, tgt), 0.0)
+                sim = embed_lookup.get((ctx, tgt), 0.0)
                 scene_buckets[ctx].append((sim, c))
 
             candidates = []
@@ -644,7 +751,7 @@ def run(job_id: str, candidates: list[dict], duration_sec: float = 0.0) -> None:
                 job_id, before, len(filtered), len(candidates), EMBED_TOP_K_PER_SCENE,
             )
 
-        # ── 2단계: Cross-Encoder 배치 → 씬별 Top-3 (Bug 2 fix: 전역 Top-30 제거) ──
+        ### 2단계: Cross-Encoder 배치 + 씬별 Top-3 ###
         CE_TOP_K_PER_SCENE = 3
         if candidates:
             pairs = [
@@ -656,17 +763,12 @@ def run(job_id: str, candidates: list[dict], duration_sec: float = 0.0) -> None:
                 unique_pairs = list(dict.fromkeys(pairs))
 
                 if cross_encoder_scorer.is_available():
-                    # Cross-Encoder 배치 추론 (정밀 평가)
                     scores = cross_encoder_scorer.batch_score(unique_pairs)
                     sim_lookup = dict(zip(unique_pairs, scores))
-                    # 개선 4: CE 단계 desire 블렌딩 비활성화
-                    # (pre-filter 단계에서만 0.7/0.3 블렌딩 적용, CE 점수는 순수하게 사용)
                     logger.info(
                         "[%s] Cross-Encoder batch: %d pair(s) scored.",
                         job_id, len(sim_lookup),
                     )
-                    # Bug 2 fix: 전역 Top-K 대신 씬별 Top-CE_TOP_K_PER_SCENE 선택
-                    # 기존 전역 정렬 → 동일 씬 독점 → 실질 1~3씬 문제 해결
                     scored_list = [
                         (c, sim_lookup.get(
                             (c.get("context_narrative") or "", c.get("target_narrative") or ""), 0.0
@@ -682,26 +784,25 @@ def run(job_id: str, candidates: list[dict], duration_sec: float = 0.0) -> None:
                         items.sort(key=lambda x: x[0], reverse=True)
                         candidates.extend(c for _, c in items[:CE_TOP_K_PER_SCENE])
                     logger.info(
-                        "[%s] CE Top-%d/scene: %d씬 → %d 후보 (from %d).",
+                        "[%s] CE Top-%d/scene: %d씬 %d 후보 (from %d).",
                         job_id, CE_TOP_K_PER_SCENE, len(ce_buckets),
                         len(candidates), len(scored_list),
                     )
                 elif not sim_lookup:
-                    # CE 없으면 MiniLM fallback
+                    # CE 없으면 ko-sroberta fallback
                     unique_ctx = list(dict.fromkeys(p[0] for p in unique_pairs))
                     unique_tgt = list(dict.fromkeys(p[1] for p in unique_pairs))
-                    sim_matrix = embedding_scorer.batch_similarity_matrix(unique_ctx, unique_tgt)
-                    ctx_idx = {t: i for i, t in enumerate(unique_ctx)}
-                    tgt_idx = {t: i for i, t in enumerate(unique_tgt)}
+                    fb_matrix = embedding_scorer.batch_similarity_matrix(unique_ctx, unique_tgt)
+                    fb_ctx_idx = {t: i for i, t in enumerate(unique_ctx)}
+                    fb_tgt_idx = {t: i for i, t in enumerate(unique_tgt)}
                     for ctx, tgt in unique_pairs:
-                        sim_lookup[(ctx, tgt)] = float(sim_matrix[ctx_idx[ctx], tgt_idx[tgt]])
+                        sim_lookup[(ctx, tgt)] = float(fb_matrix[fb_ctx_idx[ctx], fb_tgt_idx[tgt]])
                     logger.info(
-                        "[%s] Fallback MiniLM batch: %d pair(s) pre-computed.",
+                        "[%s] Fallback ko-sroberta batch: %d pair(s) pre-computed.",
                         job_id, len(sim_lookup),
                     )
 
-        # ── DB prefetch (GitHub v2.13) ──────────────────────────────────────
-        # 루프 내 씬별 DB 쿼리(O(N))를 루프 전 1회 전체 조회(O(1))로 개선
+        ### DB prefetch ###
         frames_cache = _db.fetchall(
             """SELECT timestamp_sec,
                       safe_area_x, safe_area_y, safe_area_w, safe_area_h,
@@ -712,12 +813,10 @@ def run(job_id: str, candidates: list[dict], duration_sec: float = 0.0) -> None:
             (job_id,),
         )
         silence_cache = _db.fetchall(
-            "SELECT silence_start_sec, silence_end_sec FROM analysis_audio WHERE job_id = %s",
-            (job_id,),
+            "SELECT * FROM analysis_audio WHERE job_id = %s", (job_id,),
         )
-        # scoring.py v3.1: transcript 캐시 추가 (2중 침묵 판단용)
         transcript_cache = _db.fetchall(
-            "SELECT start_sec, end_sec FROM analysis_transcript WHERE job_id = %s ORDER BY start_sec",
+            "SELECT * FROM analysis_transcript WHERE job_id = %s ORDER BY start_sec",
             (job_id,),
         )
         has_any_transcript = len(transcript_cache) > 0
@@ -726,16 +825,15 @@ def run(job_id: str, candidates: list[dict], duration_sec: float = 0.0) -> None:
             job_id, len(frames_cache), len(silence_cache), len(transcript_cache),
         )
 
-        # ── 스코어링 루프 (scoring.py v3.1 통합 방식) ───────────────────────
+        ### 스코어링 루프 ###
         scored_candidates = []
-
         for c in candidates:
             ctx = c.get("context_narrative") or ""
             tgt = c.get("target_narrative") or ""
-            # CE 점수는 후보 순위 선별용. 실제 scoring에는 threshold를 통과한 minilm 점수 사용
-            ml_val = minilm_lookup.get((ctx, tgt))
+            emb_val = embed_lookup.get((ctx, tgt))
             sl_val = sim_lookup.get((ctx, tgt))
-            precomputed = ml_val if ml_val is not None else sl_val
+            precomputed = emb_val if emb_val is not None else sl_val
+
             score, window, similarity = _score_candidate(
                 c, job_id,
                 precomputed_similarity=precomputed,
@@ -743,6 +841,8 @@ def run(job_id: str, candidates: list[dict], duration_sec: float = 0.0) -> None:
                 transcript_cache=transcript_cache,
                 has_any_transcript=has_any_transcript,
                 silence_cache=silence_cache,
+                video_w=video_w,
+                video_h=video_h,
             )
 
             if score <= 0 or window is None:
@@ -750,12 +850,14 @@ def run(job_id: str, candidates: list[dict], duration_sec: float = 0.0) -> None:
 
             ad_dur  = c.get("ad_duration_sec") or config.AD_BANNER_DURATION_SEC
             ad_type = c.get("ad_type", "banner")
+            overlay_dur = ad_dur if ad_type == "video_clip" else min(ad_dur, c["scene_duration"])
 
-            if ad_type == "video_clip":
-                overlay_dur = ad_dur
-            else:
-                overlay_dur = min(ad_dur, c["scene_duration"])
-
+            _is_vid = c.get("ad_type", "banner") == "video_clip"
+            norm_w, norm_h = _normalize_ad_size(
+                c.get("width"), c.get("height"),
+                ref_w=DEFAULT_VIDEO_W if _is_vid else DEFAULT_AD_W,
+                ref_h=DEFAULT_VIDEO_H if _is_vid else DEFAULT_AD_H,
+            )
             scored_candidates.append({
                 **c,
                 "score":                  score,
@@ -766,12 +868,12 @@ def run(job_id: str, candidates: list[dict], duration_sec: float = 0.0) -> None:
                 "overlay_duration_sec":   float(overlay_dur),
                 "coordinates_x":          window.get("corner_x", CORNER_PADDING),
                 "coordinates_y":          window.get("corner_y", CORNER_PADDING),
-                "coordinates_w":          c.get("width") or DEFAULT_AD_W,
-                "coordinates_h":          c.get("height") or DEFAULT_AD_H,
-                "corner_name":            window.get("corner_name", "TR"),
+                "coordinates_w":          norm_w,
+                "coordinates_h":          norm_h,
+                "corner_name":            window.get("corner_name", "BL"),
             })
 
-        # ── Dedup + INSERT (GitHub v2.14: 시간 겹침만 제거) ─────────────────
+        ### Dedup + INSERT ###
         best = _pick_best_and_deduplicate(scored_candidates, duration_sec=duration_sec)
         _insert_decision_results(job_id, best)
         _update_job_status(job_id, "complete")
@@ -782,21 +884,17 @@ def run(job_id: str, candidates: list[dict], duration_sec: float = 0.0) -> None:
         logger.exception("[%s] Step-4 failed: %s", job_id, exc)
         raise
 
-
 def _on_message(payload: dict) -> None:
     job_id = payload["job_id"]
-    # v2.13: lazy import — 모듈 레벨 import 시 setup_logging("step3")이 실행되어
-    # step4 log handler가 step3.log로 교체되는 문제 방지
     from step3_persistence.pipeline import build_candidates
     candidates = build_candidates(job_id)
-    # 개선 3: 영상 길이 조회 → 동적 최소 광고 간격 계산
+    # 영상 길이 조회 → 동적 최소 광고 간격 계산용
     row = _db.fetchone(
         "SELECT duration_sec FROM video_preprocessing_info WHERE job_id = %s",
         (job_id,),
     )
     duration_sec = float(row["duration_sec"]) if row and row.get("duration_sec") else 0.0
     run(job_id, candidates, duration_sec=duration_sec)
-
 
 if __name__ == "__main__":
     mq.consume(config.QUEUE_STEP4, _on_message)

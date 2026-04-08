@@ -2,9 +2,9 @@
 Step 4 — Cross-Encoder 스코어러
 ────────────────────────────────
 Fine-tuning된 Cross-Encoder 모델로 (씬, 광고) 쌍의 관련도를 평가.
-embedding_scorer.py(MiniLM 코사인 유사도)를 대체하는 정밀 평가 단계.
+embedding_scorer.py(ko-sroberta 코사인 유사도)를 대체하는 정밀 평가 단계.
 
-모델 경로: /app/storage/models/cross_encoder (train_cross_encoder.py 출력)
+모델 경로: step4_decision/model (기본값, 서버: /app/storage/models/cross_encoder)
 모델 없을 시: embedding_scorer로 fallback.
 """
 
@@ -15,7 +15,7 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL_DIR = "/app/storage/models/cross_encoder"
+DEFAULT_MODEL_DIR = str(Path(__file__).parent / "model")
 
 _model = None
 _model_dir: str = DEFAULT_MODEL_DIR
@@ -70,9 +70,8 @@ def score(context_narrative: str, target_narrative: str) -> float:
         return 0.0
     try:
         raw = model.predict([[context_narrative, target_narrative]])
-        # ms-marco 계열 모델은 로짓 출력 → sigmoid로 0~1 정규화
-        val = float(raw[0])
-        return float(1 / (1 + np.exp(-val)))
+        # 이 모델은 sigmoid activation 포함 → 출력이 이미 0~1
+        return float(np.clip(raw[0], 0.0, 1.0))
     except Exception as exc:
         logger.warning("cross_encoder_scorer.score() failed: %s", exc)
         return 0.0
@@ -94,10 +93,8 @@ def batch_score(pairs: list[tuple[str, str]], batch_size: int = 256) -> list[flo
         return [0.0] * len(pairs)
     try:
         raw_scores = model.predict([[c, t] for c, t in pairs], batch_size=batch_size)
-        result = []
-        for val in raw_scores:
-            result.append(float(1 / (1 + np.exp(-float(val)))))
-        return result
+        # 이 모델은 sigmoid activation 포함 → 출력이 이미 0~1
+        return [float(np.clip(v, 0.0, 1.0)) for v in raw_scores]
     except Exception as exc:
         logger.warning("cross_encoder_scorer.batch_score() failed: %s", exc)
         return [0.0] * len(pairs)
