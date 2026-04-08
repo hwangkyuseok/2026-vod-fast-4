@@ -7,6 +7,22 @@ import Sidebar from "@/components/Sidebar";
 interface VodFile  { name: string; path: string; }
 interface CompletedJob { job_id: string; filename: string; updated_at: string; }
 
+/* ── 편성표 JSON 타입 ── */
+interface ScheduleItem {
+  id: string;
+  title: string;
+  filename: string;
+  poster: string;    // public/posters/ 경로
+  preview: string;   // public/previews/ 경로
+  thumbnail: string; // public/thumbnails/ 경로
+  job_id: string;    // 빈 문자열이면 플레이어 연결 없음
+}
+interface ScheduleData {
+  week_label: string;
+  updated_at: string;
+  items: ScheduleItem[];
+}
+
 function cleanTitle(filename: string): string {
   return filename
     .replace(/\.(mp4|avi|mkv|mov|wmv)$/i, "")
@@ -27,7 +43,8 @@ const CARD_GRADIENTS = [
 ];
 function cardGrad(id: string) { return CARD_GRADIENTS[id.charCodeAt(0) % CARD_GRADIENTS.length]; }
 
-/* ── 썸네일 매칭: 영상 파일명 → public/ 폴더 이미지 ── */
+/* ── 이미지 매칭: 영상 파일명 → public/ 폴더 이미지 ── */
+/* 카드용 세로형 (2:3) → public/thumbnails/ */
 const THUMBNAIL_FILES = [
   "나는 SOLO.E24.260304.720p NEXT.jpg",
   "무명전설.E02.260304.720p NEXT.jpg",
@@ -35,16 +52,43 @@ const THUMBNAIL_FILES = [
   "언더커버 미쓰홍.E16.260308.720p NEXT.jpg",
   "스프링 피버.E07.260126.1080p.H264F1RST.jpg",
 ];
-function findThumbnail(filename: string): string | null {
-  // 영상 파일명에서 핵심 키워드 추출 (첫 번째 마침표 앞 = 타이틀)
+/* 편성표 미리보기용 가로형 (16:9) → public/posters/ */
+const POSTER_FILES: string[] = [
+  // 여기에 가로형 포스터 파일명 추가
+  // 예: "나는 SOLO_poster.jpg"
+];
+/* 미리보기 영상 클립 (15~30초) → public/previews/ */
+const PREVIEW_FILES: string[] = [
+  // 여기에 미리보기 영상 파일명 추가
+  // 예: "나는 SOLO.mp4", "언더커버 미쓰홍.mp4"
+];
+
+function matchFilename(filename: string, imageList: string[]): string | null {
   const title = filename.split(".")[0].replace(/[-_]/g, " ").trim().toLowerCase();
-  for (const thumb of THUMBNAIL_FILES) {
-    const thumbTitle = thumb.split(".")[0].replace(/[-_]/g, " ").trim().toLowerCase();
-    if (title.includes(thumbTitle) || thumbTitle.includes(title)) {
-      return `/${encodeURIComponent(thumb)}`;
-    }
+  for (const img of imageList) {
+    const imgTitle = img.split(".")[0].replace(/[-_]/g, " ").replace(/_poster/g, " ").trim().toLowerCase();
+    if (title.includes(imgTitle) || imgTitle.includes(title)) return img;
   }
   return null;
+}
+
+function findThumbnail(filename: string): string | null {
+  const match = matchFilename(filename, THUMBNAIL_FILES);
+  return match ? `/thumbnails/${encodeURIComponent(match)}` : null;
+}
+
+function findPoster(filename: string): string | null {
+  // 1) posters/ 폴더에서 가로형 포스터 찾기
+  const poster = matchFilename(filename, POSTER_FILES);
+  if (poster) return `/posters/${encodeURIComponent(poster)}`;
+  // 2) 없으면 thumbnails/ 이미지로 폴백
+  const thumb = matchFilename(filename, THUMBNAIL_FILES);
+  return thumb ? `/thumbnails/${encodeURIComponent(thumb)}` : null;
+}
+
+function findPreview(filename: string): string | null {
+  const match = matchFilename(filename, PREVIEW_FILES);
+  return match ? `/previews/${encodeURIComponent(match)}` : null;
 }
 
 const SECTION_TITLE_MAP: Record<string, string> = {
@@ -82,6 +126,10 @@ export default function HomePage() {
   const [loadingJobs, setLoadingJobs]     = useState(true);
   const [activeTab, setActiveTab]         = useState("OTT/앱");
 
+  /* ── 편성표 JSON 데이터 ── */
+  const [scheduleData, setScheduleData] = useState<ScheduleData | null>(null);
+  const [scheduleLoading, setScheduleLoading] = useState(true);
+
   /* ── 리모컨 포커스 시스템 ── */
   const [focusZone, setFocusZone] = useState<FocusZone>("top10");
   const [focusIdx, setFocusIdx]   = useState(0);
@@ -114,10 +162,12 @@ export default function HomePage() {
   /* 편성표 선택 인덱스 (미리보기 연동) */
   const [scheduleHoverIdx, setScheduleHoverIdx] = useState<number>(0);
 
-  /* 미리보기 비디오 URL */
+  /* 미리보기: 포스터 → 2초 후 비디오 자동재생 */
   const [previewVideoUrl, setPreviewVideoUrl] = useState<string | null>(null);
+  const [previewMode, setPreviewMode] = useState<"poster" | "video">("poster");
   const previewVideoRef = useRef<HTMLVideoElement>(null);
   const videoUrlCache = useRef<Record<string, string>>({});
+  const previewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   /* 투표 오버레이 */
   const [showVoteOverlay, setShowVoteOverlay] = useState(false);
@@ -180,6 +230,12 @@ export default function HomePage() {
       .then(r => r.json())
       .then(d => setVodFiles(d.files ?? []))
       .catch(() => {});
+    // 편성표 JSON 로드
+    fetch("/schedule.json")
+      .then(r => r.json())
+      .then((d: ScheduleData) => setScheduleData(d))
+      .catch(() => {})
+      .finally(() => setScheduleLoading(false));
   }, []);
 
   useEffect(() => { if (submitResult) { loadJobs(); setShowAdmin(false); } }, [submitResult]);
@@ -203,13 +259,16 @@ export default function HomePage() {
 
   const listCards = completedJobs.slice(0);
 
-  /* 편성표용 10개 */
-  const scheduleItems = (() => {
-    if (completedJobs.length === 0) return [];
-    const reversed = [...completedJobs].reverse();
-    const pool = [...completedJobs, ...reversed];
-    return pool.slice(0, 10);
-  })();
+  /* 편성표: JSON 데이터 우선, 없으면 completedJobs 폴백 */
+  const scheduleItems: ScheduleItem[] = scheduleData?.items ?? completedJobs.map(j => ({
+    id: j.job_id,
+    title: cleanTitle(j.filename),
+    filename: j.filename,
+    poster: "",
+    preview: "",
+    thumbnail: "",
+    job_id: j.job_id,
+  }));
 
   /* 취향 저격 추천 카드 */
   const recoCards = (() => {
@@ -226,35 +285,100 @@ export default function HomePage() {
     }
   }, [focusZone, focusIdx]);
 
-  /* 편성표 선택 → 비디오 URL 가져오기 */
+  /* 편성표 포커스/호버 → 포스터 즉시 + 메인 비디오에 직접 프리로드 → 2초 후 즉시 전환 */
   useEffect(() => {
+    // 1) 기존 타이머 취소 (빠르게 훑을 때 중복 재생 방지)
+    if (previewTimerRef.current) {
+      clearTimeout(previewTimerRef.current);
+      previewTimerRef.current = null;
+    }
+
     const item = scheduleItems[scheduleHoverIdx];
     if (!item) return;
-    const jobId = item.job_id;
-    if (videoUrlCache.current[jobId]) {
-      setPreviewVideoUrl(videoUrlCache.current[jobId]);
-      return;
+
+    // 2) 즉시: 포스터 모드로 전환, 메인 비디오 정지
+    setPreviewMode("poster");
+    setPreviewVideoUrl(null);
+    const v = previewVideoRef.current;
+    if (v) { v.pause(); v.removeAttribute("src"); v.load(); }
+
+    // 3) 비디오 URL 결정 (즉시)
+    let videoSrc: string | null = null;
+    if (item.preview && !item.preview.endsWith("/")) {
+      videoSrc = `/${item.preview}`;
+    } else {
+      const localPreview = findPreview(item.filename);
+      if (localPreview) videoSrc = localPreview;
+      else if (item.job_id && videoUrlCache.current[item.job_id]) {
+        videoSrc = videoUrlCache.current[item.job_id];
+      }
     }
-    fetch(`/api/backend/overlay/${jobId}`)
-      .then(r => r.json())
-      .then(d => {
-        if (d.original_video_url) {
-          videoUrlCache.current[jobId] = d.original_video_url;
-          setPreviewVideoUrl(d.original_video_url);
-        }
-      })
-      .catch(() => {});
+
+    // 4) 메인 비디오 요소에 직접 프리로드 (숨긴 상태로 버퍼링)
+    if (videoSrc && v) {
+      v.src = videoSrc;
+      v.preload = "auto";
+      v.load();
+    }
+
+    // 5) API 폴백 (캐시에 없는 경우 백그라운드 fetch)
+    if (!videoSrc && item.job_id && !videoUrlCache.current[item.job_id]) {
+      fetch(`/api/backend/overlay/${item.job_id}`)
+        .then(r => r.json())
+        .then(d => {
+          if (d.original_video_url) {
+            videoUrlCache.current[item.job_id] = d.original_video_url;
+            // 아직 같은 아이템이 선택된 상태면 메인 요소에 직접 프리로드
+            const currentV = previewVideoRef.current;
+            if (currentV && !videoSrc) {
+              currentV.src = d.original_video_url;
+              currentV.preload = "auto";
+              currentV.load();
+              videoSrc = d.original_video_url;
+            }
+          }
+        })
+        .catch(() => {});
+    }
+
+    // 6) 2초 타이머 → 이미 버퍼링된 비디오를 즉시 재생
+    previewTimerRef.current = setTimeout(() => {
+      previewTimerRef.current = null;
+
+      // 최종 URL 재확인 (API 폴백이 완료되었을 수 있음)
+      let finalSrc = videoSrc;
+      if (!finalSrc && item.job_id && videoUrlCache.current[item.job_id]) {
+        finalSrc = videoUrlCache.current[item.job_id];
+      }
+
+      if (finalSrc) {
+        setPreviewVideoUrl(finalSrc);
+        setPreviewMode("video");
+      }
+    }, 2000);
+
+    return () => {
+      if (previewTimerRef.current) {
+        clearTimeout(previewTimerRef.current);
+        previewTimerRef.current = null;
+      }
+    };
   }, [scheduleHoverIdx, scheduleItems]);
 
-  /* 비디오 URL 변경 시 자동 재생 */
+  /* 비디오 URL 변경 시 자동 재생 (메인 요소에 이미 프리로드 완료 → 즉시 play) */
   useEffect(() => {
     const v = previewVideoRef.current;
-    if (v && previewVideoUrl) {
-      v.src = previewVideoUrl;
-      v.load();
+    if (v && previewVideoUrl && previewMode === "video") {
+      // src가 이미 프리로드 단계에서 설정되었으면 load() 생략 → 즉시 재생
+      const currentSrc = v.src || "";
+      const alreadyLoaded = currentSrc.endsWith(previewVideoUrl) || currentSrc === previewVideoUrl;
+      if (!alreadyLoaded) {
+        v.src = previewVideoUrl;
+        v.load();
+      }
       v.play().catch(() => {});
     }
-  }, [previewVideoUrl]);
+  }, [previewVideoUrl, previewMode]);
 
   /* 투표용 컬렉션 타입 */
   const VOTE_COLLECTIONS = [
@@ -423,7 +547,7 @@ export default function HomePage() {
           break;
         case "Enter": {
           const item = scheduleItems[focusIdx];
-          if (item) router.push(`/player/${item.job_id}`);
+          if (item?.job_id) router.push(`/player/${item.job_id}`);
           break;
         }
         case "Escape":
@@ -621,11 +745,11 @@ export default function HomePage() {
         </h2>
 
         {/* ── 편성표 + 미리보기 섹션 ──────────────────────────────── */}
-        {loadingJobs ? (
+        {(loadingJobs && scheduleLoading) ? (
           <div className="mb-6">
             <div className="animate-pulse rounded-xl" style={{ height: 220, background: "#1A2035" }} />
           </div>
-        ) : completedJobs.length === 0 ? (
+        ) : (completedJobs.length === 0 && scheduleItems.length === 0) ? (
           <div className="flex flex-col items-center justify-center rounded-2xl mb-6"
             style={{ height: 200, background: "#1A2035", border: "1px solid rgba(255,255,255,0.06)" }}>
             <p className="text-4xl mb-3">📺</p>
@@ -649,16 +773,39 @@ export default function HomePage() {
                 height: "360px",
               }}
             >
-              {previewVideoUrl ? (
-                <video
-                  ref={previewVideoRef}
-                  className="w-full h-full object-cover absolute inset-0"
-                  autoPlay
-                  muted
-                  loop
-                  playsInline
-                />
-              ) : (
+              {/* 비디오 요소 (항상 존재, 포스터 모드에서는 숨김) */}
+              <video
+                ref={previewVideoRef}
+                className="w-full h-full object-cover absolute inset-0"
+                style={{ display: previewMode === "video" && previewVideoUrl ? "block" : "none" }}
+                muted
+                loop
+                playsInline
+              />
+              {/* 포스터 모드: 가로형 포스터 이미지 표시 */}
+              {previewMode === "poster" && scheduleItems[scheduleHoverIdx] && (() => {
+                const si = scheduleItems[scheduleHoverIdx];
+                // JSON poster 경로 우선 → findPoster 폴백
+                const posterSrc = (si.poster && !si.poster.endsWith("/"))
+                  ? `/${si.poster}`
+                  : findPoster(si.filename);
+                return posterSrc ? (
+                  <img
+                    src={posterSrc}
+                    alt={si.title || cleanTitle(si.filename)}
+                    className="w-full h-full object-cover absolute inset-0"
+                    style={{ transition: "opacity 0.3s ease" }}
+                  />
+                ) : (
+                  <div className="text-sm text-center z-10" style={{ color: "#8892A4" }}>
+                    <p className="text-2xl mb-2">🎬</p>
+                    <p className="font-semibold text-white mb-1">{si.title || cleanTitle(si.filename)}</p>
+                    2초 후 미리보기가 재생됩니다
+                  </div>
+                );
+              })()}
+              {/* 아무것도 없을 때 */}
+              {!scheduleItems.length && (
                 <div className="text-sm text-center z-10" style={{ color: "#8892A4" }}>
                   <p className="text-2xl mb-2">🎬</p>
                   편성표에서 영상을 선택하면<br/>미리보기가 재생됩니다.
@@ -683,7 +830,7 @@ export default function HomePage() {
                 {/* 편성표 헤더 */}
                 <div className="flex items-center justify-between px-4 py-2.5"
                   style={{ background: "#1A2035", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
-                  <span className="text-sm font-bold" style={{ color: "#FFFFFF" }}>2주차 무료 VOD 편성표</span>
+                  <span className="text-sm font-bold" style={{ color: "#FFFFFF" }}>{scheduleData?.week_label ?? "무료 VOD 편성표"}</span>
                   {focusZone === "schedule_outer" && (
                     <span className="text-[10px] px-2 py-0.5 rounded"
                       style={{ background: "rgba(255,255,255,0.15)", color: "#ccc" }}>
@@ -708,21 +855,27 @@ export default function HomePage() {
                       const tag = (
                         <div
                           id={`schedule-tag-${idx}`}
-                          key={`tag-${job.job_id}-${idx}`}
-                          className="px-3 py-2 rounded-lg text-xs font-medium truncate transition-all flex items-center justify-between flex-shrink-0"
+                          key={`tag-${job.id}-${idx}`}
+                          className="px-3 py-2 rounded-lg text-xs font-medium truncate transition-all flex items-center justify-between flex-shrink-0 cursor-pointer"
+                          onMouseEnter={() => setScheduleHoverIdx(idx)}
+                          onClick={() => { if (job.job_id) router.push(`/player/${job.job_id}`); }}
                           style={{
                             background: isActive
                               ? (isVote ? "#8B5CF6" : "#06B6D4")
-                              : "#252D42",
-                            color: isActive ? "#fff" : "#B0B8C8",
+                              : scheduleHoverIdx === idx
+                                ? "rgba(255,255,255,0.08)"
+                                : "#252D42",
+                            color: (isActive || scheduleHoverIdx === idx) ? "#fff" : "#B0B8C8",
                             border: isActive
                               ? "2px solid #FFFFFF"
-                              : "1px solid rgba(255,255,255,0.06)",
+                              : scheduleHoverIdx === idx
+                                ? "1px solid rgba(255,255,255,0.25)"
+                                : "1px solid rgba(255,255,255,0.06)",
                           }}
                         >
                           <div className="flex gap-2 items-center truncate">
                             <span className="text-[10px] w-3" style={{ opacity: 0.6 }}>{idx + 1}</span>
-                            <span className="truncate">{cleanTitle(job.filename)}</span>
+                            <span className="truncate">{job.title || cleanTitle(job.filename)}</span>
                           </div>
                         </div>
                       );
@@ -817,12 +970,12 @@ export default function HomePage() {
                     <div className="p-3 flex flex-col gap-1.5">
                       {col.items.map((job, jIdx) => (
                         <div
-                          key={`vote-${col.type}-${job.job_id}-${jIdx}`}
+                          key={`vote-${col.type}-${job.id}-${jIdx}`}
                           className="flex items-center gap-2 px-3 py-2 rounded-lg"
                           style={{ background: "rgba(255,255,255,0.04)" }}
                         >
                           <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: col.color }} />
-                          <span className="text-xs text-white truncate">{cleanTitle(job.filename)}</span>
+                          <span className="text-xs text-white truncate">{job.title || cleanTitle(job.filename)}</span>
                         </div>
                       ))}
                     </div>
