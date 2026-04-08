@@ -21,8 +21,7 @@ export default function AdOverlay({
   isPlaying,
 }: AdOverlayProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  // 피드백 상태: null=미제출, 1=적합, -1=부적합
-  const [feedback, setFeedback] = useState<1 | -1 | null>(null);
+  const [adNaturalSize, setAdNaturalSize] = useState<{ w: number; h: number } | null>(null);
 
   useEffect(() => {
     const v = videoRef.current;
@@ -50,44 +49,46 @@ export default function AdOverlay({
   const MAX_W = videoDisplayWidth  * 0.28;
   const MAX_H = videoDisplayHeight * 0.28;
 
-  // 이미지가 로드되기 전에는 safe area 좌표 기준으로 임시 판단
-  const isPortrait = rawH > rawW;
+  // 광고 소재의 실제 비율 기준으로 크기 결정, 로드 전에는 safe area 좌표로 임시 사용
+  const naturalW = adNaturalSize?.w ?? rawW;
+  const naturalH = adNaturalSize?.h ?? rawH;
+  const aspectRatio = naturalW > 0 && naturalH > 0 ? naturalW / naturalH : rawW / rawH;
+  const isPortrait = naturalH > naturalW;
   const isLeftSide = rawX < videoDisplayWidth / 2;
   const EDGE_MARGIN = 8;
 
   let w: number, h: number, x: number, y: number;
 
   if (isPortrait) {
-    // 세로 광고: 가로 광고의 높이 제한치(MAX_H)만큼 너비 제한, 엣지 스냅
-    w = Math.min(rawW, MAX_H);
-    h = Math.min(rawH, videoDisplayHeight * 0.6);
+    h = Math.min(naturalH * scaleY, MAX_H);
+    w = h * aspectRatio;
     x = isLeftSide
       ? EDGE_MARGIN
       : videoDisplayWidth - w - EDGE_MARGIN;
     y = Math.min(rawY, videoDisplayHeight - h);
   } else {
-    // 가로 광고: 기존 동작 유지
-    w = Math.min(rawW, MAX_W);
-    h = Math.min(rawH, MAX_H);
-    x = Math.min(rawX, videoDisplayWidth  - w);
+    w = Math.min(naturalW * scaleX, MAX_W);
+    h = w / aspectRatio;
+    if (h > MAX_H) { h = MAX_H; w = h * aspectRatio; }
+    x = Math.min(rawX, videoDisplayWidth - w);
     y = Math.min(rawY, videoDisplayHeight - h);
   }
 
   const style: React.CSSProperties = {
-    position:       "absolute",
-    left:           `${x}px`,
-    top:            `${y}px`,
-    width:          `${w}px`,
-    height:         `${h}px`,
-    pointerEvents:  "none",
-    zIndex:         10,
-    borderRadius:   4,
-    overflow:       "hidden",
-    boxShadow:      "0 2px 8px rgba(0,0,0,0.4)",
-    border:         "none",
-    opacity:        1,
+    position:        "absolute",
+    left:            `${x}px`,
+    top:             `${y}px`,
+    width:           `${w}px`,
+    height:          `${h}px`,
+    pointerEvents:   "none",
+    zIndex:          10,
+    borderRadius:    4,
+    overflow:        "hidden",
+    background:      "transparent",
+    border:          "none",
+    opacity:         1,
     // Smooth fade-in
-    animation:      "adOverlayFadeIn 0.35s ease",
+    animation:       "adOverlayFadeIn 0.35s ease",
   };
 
   return (
@@ -105,19 +106,25 @@ export default function AdOverlay({
             src={overlay.ad_resource_url}
             muted
             playsInline
-            style={{ width: "100%", height: "100%", objectFit: "contain", background: "transparent" }}
+            onLoadedMetadata={(e) => {
+              const v = e.currentTarget;
+              if (v.videoWidth && v.videoHeight)
+                setAdNaturalSize({ w: v.videoWidth, h: v.videoHeight });
+            }}
+            style={{ width: "100%", height: "100%", objectFit: "fill", background: "transparent" }}
           />
         ) : (
+          // eslint-disable-next-line @next/next/no-img-element
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={overlay.ad_resource_url}
             alt={overlay.matched_ad_id}
-            style={{
-              width:      "100%",
-              height:     "100%",
-              objectFit:  "cover",
-              background: "transparent",
+            onLoad={(e) => {
+              const img = e.currentTarget;
+              if (img.naturalWidth && img.naturalHeight)
+                setAdNaturalSize({ w: img.naturalWidth, h: img.naturalHeight });
             }}
+            style={{ width: "100%", height: "100%", objectFit: "fill", background: "transparent" }}
           />
         )}
 
