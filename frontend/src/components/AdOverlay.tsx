@@ -21,6 +21,10 @@ export default function AdOverlay({
   isPlaying,
 }: AdOverlayProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  // 피드백 상태: null=미제출, 1=적합, -1=부적합
+  const [feedback, setFeedback] = useState<1 | -1 | null>(null);
+  // 이미지 실제 비율 기반 컨테이너 크기 조정
+  const [fitSize, setFitSize] = useState<{ w: number; h: number } | null>(null);
 
   useEffect(() => {
     const v = videoRef.current;
@@ -47,6 +51,12 @@ export default function AdOverlay({
 
   const MAX_W = videoDisplayWidth  * 0.28;
   const MAX_H = videoDisplayHeight * 0.28;
+  const baseW = Math.min(rawW, MAX_W);
+  const baseH = Math.min(rawH, MAX_H);
+
+  // 이미지 비율에 맞게 컨테이너 축소 (fitSize가 있으면 적용)
+  const w = fitSize ? fitSize.w : baseW;
+  const h = fitSize ? fitSize.h : baseH;
 
   // 이미지가 로드되기 전에는 safe area 좌표 기준으로 임시 판단
   const isPortrait = rawH > rawW;
@@ -110,7 +120,32 @@ export default function AdOverlay({
           <img
             src={overlay.ad_resource_url}
             alt={overlay.matched_ad_id}
-            style={{ width: "100%", height: "100%", objectFit: "contain" }}
+            onLoad={(e) => {
+              const img = e.currentTarget;
+              const natW = img.naturalWidth;
+              const natH = img.naturalHeight;
+              if (natW > 0 && natH > 0) {
+                const imgRatio = natW / natH;
+                const boxRatio = baseW / baseH;
+                let fitW: number, fitH: number;
+                if (imgRatio > boxRatio) {
+                  // 이미지가 더 넓음 → 폭 기준
+                  fitW = baseW;
+                  fitH = baseW / imgRatio;
+                } else {
+                  // 이미지가 더 높음 → 높이 기준
+                  fitH = baseH;
+                  fitW = baseH * imgRatio;
+                }
+                setFitSize({ w: fitW, h: fitH });
+              }
+            }}
+            style={{
+              width:      "100%",
+              height:     "100%",
+              objectFit:  "cover",
+              background: "transparent",
+            }}
           />
         )}
 
