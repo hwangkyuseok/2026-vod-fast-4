@@ -38,12 +38,12 @@ RABBITMQ_URL      = (
 # 환경변수 QUEUE_PREFIX 로 명시적 지정 가능 (e.g. "staging").
 _QUEUE_PREFIX = os.getenv("QUEUE_PREFIX", "dev" if _IS_WINDOWS else "prod")
 
-QUEUE_STEP1  = f"vod.{_QUEUE_PREFIX}.step1.preprocess"
-QUEUE_STEP2  = f"vod.{_QUEUE_PREFIX}.step2.analysis"       # legacy (유지)
-QUEUE_STEP2A = f"vod.{_QUEUE_PREFIX}.step2a.audio"         # v2.15: 2-A (오디오 우선: faster-whisper + SBERT 분절)
-QUEUE_STEP2B = f"vod.{_QUEUE_PREFIX}.step2b.vision"        # v2.15: 2-B (비전 후속: 씬별 YOLO + Gemini)
-QUEUE_STEP3  = f"vod.{_QUEUE_PREFIX}.step3.persistence"
-QUEUE_STEP4  = f"vod.{_QUEUE_PREFIX}.step4.decision"
+QUEUE_STEP1  = f"vod.jimin.{_QUEUE_PREFIX}.step1.preprocess"
+QUEUE_STEP2  = f"vod.jimin.{_QUEUE_PREFIX}.step2.analysis"       # legacy (유지)
+QUEUE_STEP2A = f"vod.jimin.{_QUEUE_PREFIX}.step2a.audio"         # v2.15: 2-A (오디오 우선: faster-whisper + SBERT 분절)
+QUEUE_STEP2B = f"vod.jimin.{_QUEUE_PREFIX}.step2b.vision"        # v2.15: 2-B (비전 후속: 씬별 YOLO + Gemini)
+QUEUE_STEP3  = f"vod.jimin.{_QUEUE_PREFIX}.step3.persistence"
+QUEUE_STEP4  = f"vod.jimin.{_QUEUE_PREFIX}.step4.decision"
 
 # ─── Ad Resources ────────────────────────────────────────────────────────────
 AD_VIDEO_DIR = os.getenv(
@@ -115,6 +115,15 @@ SBERT_SILENCE_GAP_SEC     = float(os.getenv("SBERT_SILENCE_GAP_SEC", "4.0"))
 SBERT_SIM_THRESHOLD       = float(os.getenv("SBERT_SIM_THRESHOLD",   "0.3"))
 # Gemini 씬별 프레임 샘플 수 (Step2-B 전용)
 SCENE_SAMPLE_FRAMES       = int(os.getenv("SCENE_SAMPLE_FRAMES", "5"))  # 개선 6: 3→5 (safe_area/density 정밀도 향상)
+
+# ─── Cross-Encoder Model ─────────────────────────────────────────────────────
+# 로컬(Windows): step4_decision/model/ 상대경로 사용
+# 서버(Linux/Docker): /app/storage/models/cross_encoder (bind mount)
+CROSS_ENCODER_MODEL_DIR = os.getenv(
+    "CROSS_ENCODER_MODEL_DIR",
+    str(Path(__file__).parent.parent / "step4_decision" / "model") if _IS_WINDOWS
+    else "/app/storage/models/cross_encoder",
+)
 
 # ─── Gemini Flash API ────────────────────────────────────────────────────────
 # VLM_BACKEND: "qwen" (로컬 Qwen2-VL) | "gemini" (Google Gemini Flash API)

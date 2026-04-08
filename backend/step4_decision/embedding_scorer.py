@@ -5,10 +5,9 @@ v2.5  : score_narrative_fit() — context_narrative ↔ target_narrative 1:1 유
 v2.8  : batch_similarity_matrix() — N×M 행렬 연산으로 배치 처리
 v2.9  : score_ad_context_fit() 레거시 제거 (target_mood 컬럼 삭제)
 
-Model: paraphrase-multilingual-MiniLM-L12-v2
-  • 한국어·영어 동시 지원 (multilingual)
-  • ~470 MB, CPU 고속 추론
-  • 384차원 임베딩
+Model: jhgan/ko-sroberta-multitask
+  • 한국어 특화 sentence-transformers 모델
+  • 768차원 임베딩
 """
 
 import logging
