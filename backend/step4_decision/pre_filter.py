@@ -4,7 +4,7 @@ Step 4 — 사전 필터
 Cross-Encoder 전에 빠르게 후보를 제거.
 
   1차: 씬 길이 < 광고 길이 → Skip (유사도 계산 불필요)
-  2차: 코사인 유사도 < NARRATIVE_THRESHOLD → Skip (MiniLM 빠른 임베딩)
+  2차: 코사인 유사도 < NARRATIVE_THRESHOLD → Skip (ko-sroberta 임베딩)
 """
 
 import logging
@@ -12,20 +12,20 @@ from step4_decision import embedding_scorer
 
 logger = logging.getLogger(__name__)
 
-NARRATIVE_THRESHOLD = 0.40  # MiniLM pre-filter 기본값
+NARRATIVE_THRESHOLD = 0.30  # ko-sroberta 실험 결과 채택 (recall 21%, FPR 4.6%)
 
-# 개선 3: 씬 유형별 임계값 차등 적용
-# - 객체 감지 있음: 0.38 (구체적 장면, 약간 완화)
-# - 긴 씬 (≥ 60초): 0.35 (롱씬은 다양한 광고 수용)
-# - 짧은 씬 (< 5초): 0.45 (짧은 씬은 정밀 매칭만)
-# - 기본: 0.40
+# 씬 유형별 임계값 차등 적용 (실험 미진행 — 기존 설계값 유지)
+# - 객체 감지 있음: 0.38
+# - 긴 씬 (≥ 60초): 0.35
+# - 짧은 씬 (< 5초): 0.45
+# - 기본: 0.30
 _THRESHOLD_HAS_OBJECTS  = 0.38
 _THRESHOLD_LONG_SCENE   = 0.35
 _THRESHOLD_SHORT_SCENE  = 0.45
 
 
 def get_threshold(candidate: dict) -> float:
-    """씬 유형에 따라 MiniLM 임계값을 결정한다. decision.py에서도 재사용."""
+    """씬 유형에 따라 임계값을 결정한다. decision.py에서도 재사용."""
     scene_duration    = float(candidate.get("scene_duration", 0))
     detected_objects  = (candidate.get("detected_objects") or "").strip()
 
@@ -52,6 +52,16 @@ def passes(candidate: dict, precomputed_similarity: float | None = None) -> tupl
     ad_dur            = candidate.get("ad_duration_sec")
     ad_type           = candidate.get("ad_type", "banner")
     ad_id             = candidate.get("ad_id")
+
+    # ── 0차 필터: 카테고리 불일치 (주류 광고 → 음주 맥락 없는 씬 차단) ─────────
+    ad_category_path = candidate.get("ad_category_path") or []
+    if "주류" in ad_category_path:
+        desire  = (candidate.get("desire") or "").strip()
+        alcohol_keywords = {"술", "맥주", "소주", "와인", "음주", "주류", "한잔", "술자리"}
+        combined = context_narrative + " " + desire
+        if not any(kw in combined for kw in alcohol_keywords):
+            logger.info("[CATEGORY][SKIP] 주류 광고이나 음주 맥락 없음  ad=%s", ad_id)
+            return False, 0.0
 
     # ── 1차 필터: 씬 길이 < 광고 길이 ────────────────────────────────────────
     if ad_type == "video_clip" and ad_dur is not None:
