@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "VOD Ad Overlay Player",
-  description: "Dynamic contextual ad overlay for VOD content",
+  title: "LG 헬로비전 · FAST VOD",
+  description: "맥락 기반 AI 광고 오버레이 무료 VOD 서비스",
 };
 
 export default function RootLayout({
@@ -13,7 +13,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="ko">
-      <body className="bg-gray-950 text-gray-100 min-h-screen antialiased">
+      <body className="antialiased" style={{ background: "#0D0F18", color: "#FFFFFF", minHeight: "100vh" }}>
         {children}
       </body>
     </html>

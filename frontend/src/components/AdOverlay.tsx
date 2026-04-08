@@ -21,8 +21,10 @@ export default function AdOverlay({
   isPlaying,
 }: AdOverlayProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  // 실제 이미지 비율: null=로드 전, true=세로, false=가로
-  const [isPortraitImg, setIsPortraitImg] = useState<boolean | null>(null);
+  // 피드백 상태: null=미제출, 1=적합, -1=부적합
+  const [feedback, setFeedback] = useState<1 | -1 | null>(null);
+  // 이미지 실제 비율 기반 컨테이너 크기 조정
+  const [fitSize, setFitSize] = useState<{ w: number; h: number } | null>(null);
 
   useEffect(() => {
     const v = videoRef.current;
@@ -39,6 +41,7 @@ export default function AdOverlay({
 
   const rawX = overlay.coordinates_x != null ? overlay.coordinates_x * scaleX : 0;
   const rawY = overlay.coordinates_y != null ? overlay.coordinates_y * scaleY : 0;
+  // ── Size: 배너/비디오 동일한 DB 좌표 기반 + max 28% 제한 ──────────
   const rawW = (overlay.coordinates_w != null && overlay.coordinates_w > 0)
     ? overlay.coordinates_w * scaleX
     : videoDisplayWidth * 0.25;
@@ -48,6 +51,12 @@ export default function AdOverlay({
 
   const MAX_W = videoDisplayWidth  * 0.28;
   const MAX_H = videoDisplayHeight * 0.28;
+  const baseW = Math.min(rawW, MAX_W);
+  const baseH = Math.min(rawH, MAX_H);
+
+  // 이미지 비율에 맞게 컨테이너 축소 (fitSize가 있으면 적용)
+  const w = fitSize ? fitSize.w : baseW;
+  const h = fitSize ? fitSize.h : baseH;
 
   // 이미지가 로드되기 전에는 safe area 좌표 기준으로 임시 판단
   const isPortrait = isPortraitImg ?? (rawH > rawW);
@@ -73,15 +82,20 @@ export default function AdOverlay({
   }
 
   const style: React.CSSProperties = {
-    position:      "absolute",
-    left:          `${x}px`,
-    top:           `${y}px`,
-    width:         `${w}px`,
-    height:        `${h}px`,
-    pointerEvents: "none",
-    zIndex:        10,
-    overflow:      "hidden",
-    animation:     "adOverlayFadeIn 0.35s ease",
+    position:       "absolute",
+    left:           `${x}px`,
+    top:            `${y}px`,
+    width:          `${w}px`,
+    height:         `${h}px`,
+    pointerEvents:  "none",
+    zIndex:         10,
+    borderRadius:   4,
+    overflow:       "hidden",
+    boxShadow:      "0 2px 8px rgba(0,0,0,0.4)",
+    border:         "none",
+    opacity:        1,
+    // Smooth fade-in
+    animation:      "adOverlayFadeIn 0.35s ease",
   };
 
   return (
@@ -99,7 +113,7 @@ export default function AdOverlay({
             src={overlay.ad_resource_url}
             muted
             playsInline
-            style={{ width: "100%", height: "100%", objectFit: "cover" }}
+            style={{ width: "100%", height: "100%", objectFit: "contain", background: "transparent" }}
           />
         ) : (
           // eslint-disable-next-line @next/next/no-img-element
@@ -108,12 +122,36 @@ export default function AdOverlay({
             alt={overlay.matched_ad_id}
             onLoad={(e) => {
               const img = e.currentTarget;
-              setIsPortraitImg(img.naturalHeight > img.naturalWidth);
+              const natW = img.naturalWidth;
+              const natH = img.naturalHeight;
+              if (natW > 0 && natH > 0) {
+                const imgRatio = natW / natH;
+                const boxRatio = baseW / baseH;
+                let fitW: number, fitH: number;
+                if (imgRatio > boxRatio) {
+                  // 이미지가 더 넓음 → 폭 기준
+                  fitW = baseW;
+                  fitH = baseW / imgRatio;
+                } else {
+                  // 이미지가 더 높음 → 높이 기준
+                  fitH = baseH;
+                  fitW = baseH * imgRatio;
+                }
+                setFitSize({ w: fitW, h: fitH });
+              }
+            }}
+            style={{
+              width:      "100%",
+              height:     "100%",
+              objectFit:  "cover",
+              background: "transparent",
             }}
             style={{ width: "100%", height: "100%", objectFit: "contain" }}
           />
         )}
+
       </div>
+
     </>
   );
 }
