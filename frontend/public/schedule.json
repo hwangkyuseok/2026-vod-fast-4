@@ -14,7 +14,7 @@
     {
       "id": "2",
       "title": "아따맘마",
-      "filename": "나는 SOLO.E243.260304.720p NEXT",
+      "filename": "아따맘마",
       "poster": "posters/아따맘마.jpg",
       "preview": "previews/아따맘마_sample.mp4",
       "thumbnail": "thumbnails/아따맘마.jpg",
@@ -23,38 +23,38 @@
     {
       "id": "3",
       "title": "언더커버 미쓰홍 E16",
-      "filename": "언더커버 미쓰홍.E16.260308.720p NEXT",
-      "poster": "posters/",
+      "filename": "언더커버 미쓰홍.E16",
+      "poster": "posters/언더커버미스홍.jpg",
       "preview": "previews/",
       "thumbnail": "thumbnails/언더커버 미쓰홍.E16.260308.720p NEXT.jpg",
-      "job_id": ""
+      "job_id": "cd7d55ac-1fdf-40d5-9a7f-f61038c75481"
     },
     {
       "id": "4",
       "title": "판사 이한영 E09",
-      "filename": "판사 이한영.E09.260130.720p NEXT",
-      "poster": "posters/",
+      "filename": "판사 이한영.E09",
+      "poster": "posters/판사 이한영.jpg",
       "preview": "previews/",
       "thumbnail": "thumbnails/판사 이한영.E09.260130.720p NEXT.jpg",
-      "job_id": ""
+      "job_id": "21085c3b-daf4-4489-ac34-2f2073e06b7c"
     },
     {
       "id": "5",
       "title": "스프링 피버 E07",
-      "filename": "스프링 피버.E07.260126.1080p.H264F1RST",
-      "poster": "posters/",
+      "filename": "스프링 피버.E07",
+      "poster": "posters/스프링피버.jpg",
       "preview": "previews/",
       "thumbnail": "thumbnails/스프링 피버.E07.260126.1080p.H264F1RST.jpg",
-      "job_id": ""
+      "job_id": "8699e1fb-1309-43c4-9f96-de62e7b1a40f"
     },
     {
       "id": "6",
       "title": "언더커버 미쓰홍 E16 (재)",
-      "filename": "언더커버 미쓰홍.E16.260308.720p NEXT",
-      "poster": "posters/",
+      "filename": "언더커버 미쓰홍.E16",
+      "poster": "posters/언더커버미스홍.jpg",
       "preview": "previews/",
       "thumbnail": "thumbnails/언더커버 미쓰홍.E16.260308.720p NEXT.jpg",
-      "job_id": ""
+      "job_id": "cd7d55ac-1fdf-40d5-9a7f-f61038c75481"
     }
   ]
 }
