@@ -219,7 +219,7 @@ export default function HomePage() {
     setLoadingJobs(true);
     fetch("/api/backend/jobs/completed")
       .then(r => r.json())
-      .then(d => setCompletedJobs(d.jobs ?? []))
+      .then(d => setCompletedJobs((d.jobs ?? []).filter((j: CompletedJob) => !j.filename.toLowerCase().includes("samplevideo"))))
       .catch(() => {})
       .finally(() => setLoadingJobs(false));
   }
