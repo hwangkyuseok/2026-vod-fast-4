@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { OverlayEntry } from "@/types/overlay";
+import { scaleCoordinates, MAX_OVERLAY_RATIO } from "@/utils/overlay";
 
 interface AdOverlayProps {
   overlay: OverlayEntry;
@@ -36,27 +37,18 @@ export default function AdOverlay({
     }
   }, [isPlaying]);
 
-  const scaleX = videoNaturalWidth > 0 ? videoDisplayWidth / videoNaturalWidth : 1;
-  const scaleY = videoNaturalHeight > 0 ? videoDisplayHeight / videoNaturalHeight : 1;
+  // ── 좌표 스케일링 (utils/overlay.ts 순수 함수 사용) ────────────────────
+  const dims = { naturalWidth: videoNaturalWidth, naturalHeight: videoNaturalHeight, displayWidth: videoDisplayWidth, displayHeight: videoDisplayHeight };
+  const raw = scaleCoordinates(overlay, dims);
+  const rawX = raw.x;
+  const rawY = raw.y;
+  const rawW = raw.w;
+  const rawH = raw.h;
 
-  const rawX = overlay.coordinates_x != null ? overlay.coordinates_x * scaleX : 0;
-  const rawY = overlay.coordinates_y != null ? overlay.coordinates_y * scaleY : 0;
-  // ── Size: 배너/비디오 동일한 DB 좌표 기반 + max 28% 제한 ──────────
-  const rawW = (overlay.coordinates_w != null && overlay.coordinates_w > 0)
-    ? overlay.coordinates_w * scaleX
-    : videoDisplayWidth * 0.25;
-  const rawH = (overlay.coordinates_h != null && overlay.coordinates_h > 0)
-    ? overlay.coordinates_h * scaleY
-    : videoDisplayHeight * 0.22;
-
-  const MAX_W = videoDisplayWidth  * 0.28;
-  const MAX_H = videoDisplayHeight * 0.28;
+  const MAX_W = videoDisplayWidth  * MAX_OVERLAY_RATIO;
+  const MAX_H = videoDisplayHeight * MAX_OVERLAY_RATIO;
   const baseW = Math.min(rawW, MAX_W);
   const baseH = Math.min(rawH, MAX_H);
-
-  // 이미지 비율에 맞게 컨테이너 축소 (fitSize가 있으면 적용)
-  const w = fitSize ? fitSize.w : baseW;
-  const h = fitSize ? fitSize.h : baseH;
 
   // 이미지가 로드되기 전에는 safe area 좌표 기준으로 임시 판단
   const isPortrait = rawH > rawW;
