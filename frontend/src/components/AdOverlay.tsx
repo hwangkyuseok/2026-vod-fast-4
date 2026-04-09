@@ -27,7 +27,7 @@ export default function AdOverlay({
     const v = videoRef.current;
     if (!v) return;
     if (isPlaying) {
-      v.play().catch(() => {});
+      v.play().catch(() => { });
     } else {
       v.pause();
     }
@@ -37,7 +37,7 @@ export default function AdOverlay({
   const scaleY = videoNaturalHeight > 0 ? videoDisplayHeight / videoNaturalHeight : 1;
 
   const rawX = overlay.coordinates_x != null ? overlay.coordinates_x * scaleX : 0;
-  const rawY = overlay.coordinates_y != null ? overlay.coordinates_y * scaleY : 0;
+
   // ── Size: 배너/비디오 동일한 DB 좌표 기반 + max 28% 제한 ──────────
   const rawW = (overlay.coordinates_w != null && overlay.coordinates_w > 0)
     ? overlay.coordinates_w * scaleX
@@ -46,7 +46,7 @@ export default function AdOverlay({
     ? overlay.coordinates_h * scaleY
     : videoDisplayHeight * 0.22;
 
-  const MAX_W = videoDisplayWidth  * 0.28;
+  const MAX_W = videoDisplayWidth * 0.28;
   const MAX_H = videoDisplayHeight * 0.28;
 
   // 광고 소재의 실제 비율 기준으로 크기 결정, 로드 전에는 safe area 좌표로 임시 사용
@@ -55,9 +55,10 @@ export default function AdOverlay({
   const aspectRatio = naturalW > 0 && naturalH > 0 ? naturalW / naturalH : rawW / rawH;
   const isPortrait = naturalH > naturalW;
   const isLeftSide = rawX < videoDisplayWidth / 2;
-  const EDGE_MARGIN = 8;
+  const EDGE_MARGIN = 30;
+  const BOTTOM_MARGIN = 100;
 
-  let w: number, h: number, x: number, y: number;
+  let w: number, h: number, x: number;
 
   if (isPortrait) {
     h = Math.min(naturalH * scaleY, MAX_H);
@@ -65,30 +66,28 @@ export default function AdOverlay({
     x = isLeftSide
       ? EDGE_MARGIN
       : videoDisplayWidth - w - EDGE_MARGIN;
-    y = Math.min(rawY, videoDisplayHeight - h);
   } else {
     w = Math.min(naturalW * scaleX, MAX_W);
     h = w / aspectRatio;
     if (h > MAX_H) { h = MAX_H; w = h * aspectRatio; }
     x = Math.min(rawX, videoDisplayWidth - w);
-    y = Math.min(rawY, videoDisplayHeight - h);
   }
 
   const style: React.CSSProperties = {
-    position:        "absolute",
-    left:            `${x}px`,
-    top:             `${y}px`,
-    width:           `${w}px`,
-    height:          `${h}px`,
-    pointerEvents:   "none",
-    zIndex:          10,
-    borderRadius:    4,
-    overflow:        "hidden",
-    background:      "transparent",
-    border:          "none",
-    opacity:         1,
+    position: "absolute",
+    left: `${x}px`,
+    bottom: `${BOTTOM_MARGIN}px`,
+    width: `${w}px`,
+    height: `${h}px`,
+    pointerEvents: "none",
+    zIndex: 10,
+    borderRadius: 4,
+    overflow: "hidden",
+    background: "transparent",
+    border: "none",
+    opacity: 1,
     // Smooth fade-in
-    animation:       "adOverlayFadeIn 0.35s ease",
+    animation: "adOverlayFadeIn 0.35s ease",
   };
 
   return (
