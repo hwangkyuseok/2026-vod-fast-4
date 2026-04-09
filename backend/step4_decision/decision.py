@@ -138,8 +138,8 @@ CORNER_PADDING = 20    # 화면 가장자리 패딩
 VIDEO_W        = 1280  # 기준 해상도 너비
 VIDEO_H        = 720   # 기준 해상도 높이
 # 근거: YouTube/Netflix 오버레이가 하단 1/3(lower third)인 업계 표준
-#   배너형은 BL/BR, 로고/아이콘형은 TR이 관행 (Filmkraft, BoxCast)
-CORNER_PRIORITY = ["BL", "BR", "TL", "TR"]
+#   하단 2곳(BL/BR)으로 고정 — 위치 일관성 및 몰입 방해 최소화
+CORNER_PRIORITY = ["BL", "BR"]
 
 
 ### 코너 배치 함수 (scoring.py v3.1) ###
