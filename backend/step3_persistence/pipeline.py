@@ -93,18 +93,18 @@ def build_candidates(job_id: str) -> list[dict]:
 
     Schema (v2.11):
     {
-        "scene_start_sec":   float,
-        "scene_end_sec":     float,
-        "scene_duration":    float,
-        "context_narrative": str,
-        "desire":            str,        -- 씬 소비 욕구 (개선 4: desire 임베딩 블렌딩용)
-        "ad_id":             str,
-        "ad_name":           str,
-        "ad_type":           str,
-        "ad_duration_sec":   float | None,
-        "target_narrative":  str,
-        "ad_category":       str,        -- NULL이면 "" (카테고리 보너스 미적용)
-        "ad_category_path":  list[str],  -- NULL이면 []
+        "scene_start_sec":    float,
+        "scene_end_sec":      float,
+        "scene_duration":     float,
+        "context_narrative":  str,
+        "desire":             str,        -- 씬 소비 욕구 (개선 4: desire 임베딩 블렌딩용)
+        "ad_id":              str,
+        "ad_name":            str,
+        "ad_type":            str,
+        "ad_duration_sec":    float | None,
+        "target_narrative": str,       -- 광고 서술문 v2 (ad_inventory.target_narrative)
+        "ad_category":        str,        -- NULL이면 "" (카테고리 보너스 미적용)
+        "ad_category_path":   list[str],  -- NULL이면 []
     }
     """
     scenes     = _get_scene_intervals(job_id)
@@ -132,7 +132,7 @@ def build_candidates(job_id: str) -> list[dict]:
                 "ad_name":           ad.get("ad_name") or "",
                 "ad_type":           ad["ad_type"],
                 "ad_duration_sec":   float(ad["duration_sec"]) if ad["duration_sec"] is not None else None,
-                "target_narrative":  ad.get("target_narrative") or "",
+                "target_narrative": ad.get("target_narrative") or "",
                 "ad_category":       ad.get("ad_category") or "",
                 "ad_category_path":  ad.get("ad_category_path") or [],
             })
