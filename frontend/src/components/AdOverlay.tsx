@@ -48,6 +48,12 @@ export default function AdOverlay({
 
   const MAX_W = videoDisplayWidth * 0.28;
   const MAX_H = videoDisplayHeight * 0.28;
+  const baseW = Math.min(rawW, MAX_W);
+  const baseH = Math.min(rawH, MAX_H);
+
+  // 이미지 비율에 맞게 컨테이너 축소 (fitSize가 있으면 적용)
+  const w = fitSize ? fitSize.w : baseW;
+  const h = fitSize ? fitSize.h : baseH;
 
   // 광고 소재의 실제 비율 기준으로 크기 결정, 로드 전에는 safe area 좌표로 임시 사용
   const naturalW = adNaturalSize?.w ?? rawW;
