@@ -1,0 +1,39 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Dockerfile.frontend
+# Next.js 14 프론트엔드 컨테이너
+#
+# 빌드 시 BACKEND_URL 을 ARG 로 전달:
+#   docker build --build-arg BACKEND_URL=http://step5-api:8000 .
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── 1단계: 빌드 ──────────────────────────────────────────────────────────────
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+COPY package.json ./
+RUN npm install
+
+COPY . .
+
+# 백엔드 API 주소 (Next.js rewrite destination)
+ARG BACKEND_URL=http://step5-api:8000
+ENV BACKEND_URL=${BACKEND_URL}
+
+RUN npm run build
+
+# ── 2단계: 런타임 ─────────────────────────────────────────────────────────────
+FROM node:20-alpine AS runner
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+
+COPY --from=builder /app/.next          ./.next
+COPY --from=builder /app/node_modules   ./node_modules
+COPY --from=builder /app/package.json   ./package.json
+COPY --from=builder /app/public         ./public
+
+EXPOSE 3000
+
+CMD ["npm", "start"]
