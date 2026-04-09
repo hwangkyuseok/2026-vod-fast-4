@@ -8,6 +8,12 @@ import {
 } from "react";
 import type { OverlayEntry, OverlayMetadata } from "@/types/overlay";
 import AdOverlay from "./AdOverlay";
+import {
+  formatTime,
+  getActiveOverlays,
+  deduplicateOverlays,
+  clampSeekTime,
+} from "@/utils/overlay";
 
 interface VideoPlayerProps {
   metadata: OverlayMetadata;
@@ -102,7 +108,7 @@ export default function VideoPlayer({ metadata }: VideoPlayerProps) {
   const seekTo = useCallback((t: number) => {
     const v = videoRef.current;
     if (!v) return;
-    v.currentTime = Math.max(0, Math.min(t, v.duration || Infinity));
+    v.currentTime = clampSeekTime(t, v.duration || Infinity);
     setCurrentTime(v.currentTime);
     setIsEnded(false);  // resume overlay detection after manual seek
   }, []);
@@ -181,31 +187,9 @@ export default function VideoPlayer({ metadata }: VideoPlayerProps) {
     seekTo(parseFloat(e.target.value));
   };
 
-  // ── active overlays ───────────────────────────────────────────────────────
-  // Collect all overlays whose window covers the current playback position.
-  // When the video has ended, suppress all overlays immediately.
-  const allActive: OverlayEntry[] = isEnded ? [] : (metadata.overlays ?? []).filter((o) => {
-    const start = o.overlay_start_time_sec;
-    const end   = start + o.overlay_duration_sec;
-    return currentTime >= start && currentTime < end;
-  });
-
-  // Safety: never show more than one ad at a time.
-  // The backend guarantees non-overlapping windows, but as a defensive layer
-  // we pick the single highest-scoring overlay if duplicates slip through.
-  const activeOverlays: OverlayEntry[] =
-    allActive.length <= 1
-      ? allActive
-      : [allActive.reduce((best, o) => (o.score >= best.score ? o : best))];
-
-  // ── time formatting (h:mm:ss or m:ss) ────────────────────────────────────
-  const fmt = (s: number) => {
-    const h   = Math.floor(s / 3600);
-    const m   = Math.floor((s % 3600) / 60);
-    const sec = Math.floor(s % 60);
-    if (h > 0) return `${h}:${m.toString().padStart(2, "0")}:${sec.toString().padStart(2, "0")}`;
-    return `${m}:${sec.toString().padStart(2, "0")}`;
-  };
+  // ── active overlays (utils/overlay.ts 순수 함수 사용) ────────────────────
+  const allActive = getActiveOverlays(metadata.overlays ?? [], currentTime, isEnded);
+  const activeOverlays = deduplicateOverlays(allActive);
 
   const totalDur = duration || metadata.total_duration_sec || 1;
 
@@ -329,7 +313,7 @@ export default function VideoPlayer({ metadata }: VideoPlayerProps) {
 
             {/* Time */}
             <span className="text-sm text-gray-400 font-mono">
-              {fmt(currentTime)} / {fmt(totalDur)}
+              {formatTime(currentTime)} / {formatTime(totalDur)}
             </span>
           </div>
 
@@ -355,7 +339,7 @@ export default function VideoPlayer({ metadata }: VideoPlayerProps) {
               return (
                 <div
                   key={`tl-${o.matched_ad_id}-${o.overlay_start_time_sec}`}
-                  title={`${o.matched_ad_id} — ${fmt(o.overlay_start_time_sec)} (score: ${o.score})`}
+                  title={`${o.matched_ad_id} — ${formatTime(o.overlay_start_time_sec)} (score: ${o.score})`}
                   className={`absolute top-1 bottom-1 rounded-full transition-all cursor-pointer
                     ${isActive
                       ? "bg-indigo-400"
@@ -411,7 +395,7 @@ export default function VideoPlayer({ metadata }: VideoPlayerProps) {
                       <td
                         className="px-4 py-2 font-mono text-indigo-300 truncate max-w-[200px]
                                    cursor-pointer hover:text-indigo-100 hover:underline select-none"
-                        title={`클릭 → ${fmt(o.overlay_start_time_sec)}으로 이동`}
+                        title={`클릭 → ${formatTime(o.overlay_start_time_sec)}으로 이동`}
                         onClick={() => seekTo(o.overlay_start_time_sec)}
                       >
                         {isActive && (
@@ -434,7 +418,7 @@ export default function VideoPlayer({ metadata }: VideoPlayerProps) {
                         className="px-4 py-2 text-right cursor-pointer hover:text-white select-none"
                         onClick={() => seekTo(o.overlay_start_time_sec)}
                       >
-                        {fmt(o.overlay_start_time_sec)}
+                        {formatTime(o.overlay_start_time_sec)}
                       </td>
                       <td className="px-4 py-2 text-right">
                         {o.overlay_duration_sec.toFixed(1)}

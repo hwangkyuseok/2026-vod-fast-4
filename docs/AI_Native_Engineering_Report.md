@@ -79,8 +79,12 @@ frontend/
 │       └── TDD-refactor.agent.md               ← Refactor 에이전트 (코드 개선)
 │
 ├── src/utils/overlay.ts                        ← 순수 함수 7개 (비즈니스 로직)
-├── tests/overlay.test.ts                       ← 단위 테스트 32개
-└── vitest.config.ts                            ← 테스트 환경 설정
+├── tests/overlay.test.ts                       ← 순수 함수 단위 테스트 32개
+├── tests/components/
+│   ├── AdOverlayTV.test.tsx                    ← 광고 오버레이 컴포넌트 테스트 10개
+│   ├── Sidebar.test.tsx                        ← 사이드바 컴포넌트 테스트 8개
+│   └── PlayerPage.test.tsx                     ← 플레이어 페이지 컴포넌트 테스트 6개
+└── vitest.config.ts                            ← 테스트 환경 설정 (React plugin 포함)
 ```
 
 ---
@@ -149,9 +153,9 @@ frontend/
 
 ## 6. 테스트 결과
 
-```
- RUN  v4.1.3
+### 6.1 Level 1: 순수 함수 단위 테스트 (32개)
 
+```
  ✅ formatTime              7개 통과
  ✅ getActiveOverlays        6개 통과
  ✅ deduplicateOverlays      3개 통과
@@ -159,13 +163,37 @@ frontend/
  ✅ capOverlaySize           3개 통과
  ✅ clampPosition            3개 통과
  ✅ clampSeekTime            5개 통과
+```
 
- Test Files  1 passed (1)
-      Tests  32 passed (32)
-   Duration  7.88s
+### 6.2 Level 2: 컴포넌트 렌더링 테스트 (24개)
+
+```
+ ✅ AdOverlayTV: 광고 타입별 렌더링         3개 통과  (banner/video_clip/muted)
+ ✅ AdOverlayTV: 좌표 스케일링              3개 통과  (50%축소, 28%제한, null좌표)
+ ✅ AdOverlayTV: 재생 동기화                2개 통과  (play/pause)
+ ✅ AdOverlayTV: 스타일                     2개 통과  (pointerEvents, zIndex)
+ ✅ Sidebar: 메뉴 항목 렌더링               3개 통과  (필수메뉴, FAST VOD, 개수)
+ ✅ Sidebar: 네비게이션                     3개 통과  (홈, FAST VOD, href없는 메뉴)
+ ✅ Sidebar: 포커스 상태                    2개 통과  (null/지정 focusedIndex)
+ ✅ PlayerPage: 로딩 상태                   1개 통과  (로딩 표시)
+ ✅ PlayerPage: 에러 상태                   3개 통과  (에러메시지, 버튼, 네비게이션)
+ ✅ PlayerPage: 폴링 상태                   1개 통과  (분석 중 메시지)
+ ✅ PlayerPage: 키보드 이벤트               1개 통과  (ESC 키)
+```
+
+### 6.3 전체 테스트 실행 결과
+
+```
+ RUN  v4.1.3
+
+ Test Files  4 passed (4)
+      Tests  56 passed (56)
+   Duration  2.29s
 ```
 
 ### 주요 경계값 테스트 목록
+
+**순수 함수 경계값**
 
 | 함수 | 경계값 케이스 | 검증 내용 |
 |------|-------------|----------|
@@ -179,6 +207,19 @@ frontend/
 | `scaleCoordinates` | naturalWidth = 0 | scale=1 폴백 |
 | `capOverlaySize` | 부분 초과 (너비만) | 너비만 cap |
 | `clampSeekTime` | 음수 시간 | 0으로 제한 |
+
+**컴포넌트 경계값**
+
+| 컴포넌트 | 경계값 케이스 | 검증 내용 |
+|---------|-------------|----------|
+| `AdOverlayTV` | 좌표가 null | 기본 위치(0,0) 적용, 크래시 없음 |
+| `AdOverlayTV` | 크기 28% 초과 | 최대 크기로 잘림 |
+| `AdOverlayTV` | isPlaying 변경 | play()/pause() 호출 확인 |
+| `Sidebar` | href 없는 메뉴 클릭 | router.push 호출 안 됨 |
+| `Sidebar` | focusedIndex null vs 값 | 보더 스타일 변경 확인 |
+| `PlayerPage` | fetch pending | 로딩 표시 렌더링 |
+| `PlayerPage` | 404 + 404 응답 | 에러 메시지 표시 |
+| `PlayerPage` | ESC 키 이벤트 | 홈으로 네비게이션 |
 
 ---
 
@@ -201,11 +242,16 @@ src/
 **After**
 ```
 src/
-├── components/            ← UI 렌더링만 담당
+├── components/            ← UI 렌더링만 담당 (utils import 교체 완료)
+│   ├── VideoPlayer.tsx    ← formatTime, getActiveOverlays, deduplicateOverlays, clampSeekTime 사용
+│   ├── TVPlayer.tsx       ← formatTime, getActiveOverlays, deduplicateOverlays, clampSeekTime 사용
+│   ├── AdOverlay.tsx      ← scaleCoordinates, MAX_OVERLAY_RATIO 사용
+│   └── AdOverlayTV.tsx    ← scaleCoordinates, capOverlaySize, clampPosition 사용
 ├── utils/overlay.ts       ← 비즈니스 로직 (순수 함수 7개, 1곳에서 관리)
 └── types/overlay.ts
 tests/
-└── overlay.test.ts        ← 단위 테스트 32개
+├── overlay.test.ts        ← 순수 함수 단위 테스트 32개
+└── components/            ← 컴포넌트 렌더링 테스트 24개
 .github/
 ├── copilot-instructions.md
 ├── instructions/          ← 코딩/테스트 규칙 문서화
@@ -225,11 +271,17 @@ tests/
 | 크기 제한 (28%) | AdOverlay.tsx + AdOverlayTV.tsx (2곳) |
 | 경계 클램핑 | AdOverlay.tsx + AdOverlayTV.tsx (2곳) |
 
-**After — 1곳에서 관리, 4곳에서 import**
+**After — 1곳에서 관리, 4곳에서 import (교체 완료)**
 
 ```typescript
-// 모든 컴포넌트에서 동일하게 사용
-import { formatTime, getActiveOverlays, scaleCoordinates } from "@/utils/overlay";
+// VideoPlayer.tsx, TVPlayer.tsx
+import { formatTime, getActiveOverlays, deduplicateOverlays, clampSeekTime } from "@/utils/overlay";
+
+// AdOverlayTV.tsx
+import { scaleCoordinates, capOverlaySize, clampPosition } from "@/utils/overlay";
+
+// AdOverlay.tsx (portrait 분기 로직은 컴포넌트 고유이므로 부분 교체)
+import { scaleCoordinates, MAX_OVERLAY_RATIO } from "@/utils/overlay";
 ```
 
 ### 7.3 매직 넘버
@@ -254,11 +306,11 @@ export const DEFAULT_HEIGHT_RATIO = 0.22;
 
 | 항목 | Before | After |
 |------|--------|-------|
-| **검증 방법** | 브라우저에서 영상 재생 후 눈으로 확인 | `npm test` 3초 자동 검증 |
+| **검증 방법** | 브라우저에서 영상 재생 후 눈으로 확인 | `npm test` 2초 자동 검증 |
 | **경계값 테스트** | 불가능 (수동으로 재현 어려움) | 코드로 고정, 자동 반복 검증 |
-| **회귀 테스트** | 코드 수정 후 전체 화면 수동 확인 | 기존 32개 테스트 자동 재실행 |
-| **테스트 커버리지** | 0% | 핵심 비즈니스 로직 7개 함수 100% |
-| **검증 소요 시간** | 수 분 (영상 재생 + 눈 확인) | 7.88초 (자동) |
+| **회귀 테스트** | 코드 수정 후 전체 화면 수동 확인 | 기존 56개 테스트 자동 재실행 |
+| **테스트 커버리지** | 0% | 순수 함수 7개 + 컴포넌트 3개 |
+| **검증 소요 시간** | 수 분 (영상 재생 + 눈 확인) | 2.29초 (자동) |
 
 ### 7.5 개발 규칙 관리
 
@@ -299,7 +351,8 @@ export const DEFAULT_HEIGHT_RATIO = 0.22;
 |------|--------|-------|------|
 | 코드 구조 | 로직+UI 혼재, 4곳 복붙 | 순수 함수 분리, 1곳 관리 | 유지보수성 향상 |
 | 매직 넘버 | `0.28`, `0.25` 의미 불명 | 이름 있는 상수 | 가독성 향상 |
-| 품질 검증 | 수동 (브라우저 눈 확인) | 자동 (32개 테스트, 7.88초) | 검증 속도 + 신뢰도 향상 |
+| 품질 검증 | 수동 (브라우저 눈 확인) | 자동 (56개 테스트, 2.29초) | 검증 속도 + 신뢰도 향상 |
+| 테스트 범위 | 없음 | 순수 함수 32개 + 컴포넌트 24개 | 2단계 테스트 체계 |
 | 경계값 버그 | 시연 시 발견 | 사전 코드로 고정 | 안정성 향상 |
 | 개발 규칙 | 암묵적 (머릿속) | 파일로 문서화 (.github/) | 팀 표준화 |
 | AI 활용 | 비체계적 | 역할별 에이전트 자동 사이클 | 개발 효율성 향상 |
@@ -328,6 +381,7 @@ npm run dev
 | 순수 함수 분리 | `src/utils/overlay.ts` 7개 함수 | ✅ 완료 |
 | 단위 테스트 작성 | `tests/overlay.test.ts` 32개 | ✅ 완료 |
 | TDD 에이전트 구성 | `.github/agents/` Red/Green/Refactor | ✅ 완료 |
-| 컴포넌트에서 유틸 import 교체 | VideoPlayer, TVPlayer 등 | 🔲 미진행 |
-| 컴포넌트 렌더링 테스트 | React Testing Library | 🔲 미진행 |
+| 컴포넌트 렌더링 테스트 | AdOverlayTV 10개 + Sidebar 8개 + PlayerPage 6개 = 24개 | ✅ 완료 |
+| AdOverlay.tsx 버그 수정 | 중복 변수 선언 + useState import 누락 수정 | ✅ 완료 |
+| 컴포넌트에서 유틸 import 교체 | VideoPlayer, TVPlayer, AdOverlay, AdOverlayTV 4개 완료 | ✅ 완료 |
 | 테스트 커버리지 리포트 | Vitest coverage | 🔲 미진행 |

@@ -3,6 +3,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { OverlayEntry, OverlayMetadata } from "@/types/overlay";
 import AdOverlay from "./AdOverlay";
+import {
+  formatTime,
+  getActiveOverlays,
+  deduplicateOverlays,
+  clampSeekTime,
+} from "@/utils/overlay";
 
 interface TVPlayerProps {
   metadata: OverlayMetadata;
@@ -103,7 +109,7 @@ export default function TVPlayer({ metadata, onExit }: TVPlayerProps) {
   const seekTo = useCallback((t: number) => {
     const v = videoRef.current;
     if (!v) return;
-    v.currentTime = Math.max(0, Math.min(t, v.duration || Infinity));
+    v.currentTime = clampSeekTime(t, v.duration || Infinity);
     setCurrentTime(v.currentTime);
     setIsEnded(false);
   }, []);
@@ -188,23 +194,9 @@ export default function TVPlayer({ metadata, onExit }: TVPlayerProps) {
     seekTo(ratio * totalDur);
   };
 
-  // ── 활성 광고 오버레이 ──────────────────────────────────────────────────
-  const allActive: OverlayEntry[] = isEnded ? [] : (metadata.overlays ?? []).filter((o) => {
-    const start = o.overlay_start_time_sec;
-    const end = start + o.overlay_duration_sec;
-    return currentTime >= start && currentTime < end;
-  });
-  const activeOverlays: OverlayEntry[] =
-    allActive.length <= 1 ? allActive : [allActive.reduce((best, o) => (o.score >= best.score ? o : best))];
-
-  // ── 시간 포맷 ──────────────────────────────────────────────────────────
-  const fmt = (s: number) => {
-    const h = Math.floor(s / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    const sec = Math.floor(s % 60);
-    if (h > 0) return `${h}:${m.toString().padStart(2, "0")}:${sec.toString().padStart(2, "0")}`;
-    return `${m}:${sec.toString().padStart(2, "0")}`;
-  };
+  // ── 활성 광고 오버레이 (utils/overlay.ts 순수 함수 사용) ────────────────
+  const allActive = getActiveOverlays(metadata.overlays ?? [], currentTime, isEnded);
+  const activeOverlays = deduplicateOverlays(allActive);
 
   return (
     <div
@@ -323,7 +315,7 @@ export default function TVPlayer({ metadata, onExit }: TVPlayerProps) {
                   boxShadow: isActive ? "0 0 10px rgba(255, 241, 0, 0.8)" : "none",
                   transition: "all 0.2s ease",
                 }}
-                title={`광고 ${fmt(o.overlay_start_time_sec)}`}
+                title={`광고 ${formatTime(o.overlay_start_time_sec)}`}
                 onClick={(e) => {
                   e.stopPropagation();
                   seekTo(o.overlay_start_time_sec);
@@ -398,7 +390,7 @@ export default function TVPlayer({ metadata, onExit }: TVPlayerProps) {
 
             {/* 시간 */}
             <span className="text-sm text-white/80 font-mono">
-              {fmt(currentTime)} / {fmt(totalDur)}
+              {formatTime(currentTime)} / {formatTime(totalDur)}
             </span>
           </div>
 

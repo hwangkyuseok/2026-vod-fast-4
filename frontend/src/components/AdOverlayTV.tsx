@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import type { OverlayEntry } from "@/types/overlay";
+import { scaleCoordinates, capOverlaySize, clampPosition } from "@/utils/overlay";
 
 interface AdOverlayTVProps {
   overlay: OverlayEntry;
@@ -33,25 +34,13 @@ export default function AdOverlayTV({
     else v.pause();
   }, [isPlaying]);
 
-  // 좌표 스케일링
-  const scaleX = videoNaturalWidth > 0 ? videoDisplayWidth / videoNaturalWidth : 1;
-  const scaleY = videoNaturalHeight > 0 ? videoDisplayHeight / videoNaturalHeight : 1;
-
-  const rawX = overlay.coordinates_x != null ? overlay.coordinates_x * scaleX : 0;
-  const rawY = overlay.coordinates_y != null ? overlay.coordinates_y * scaleY : 0;
-  const rawW = (overlay.coordinates_w != null && overlay.coordinates_w > 0)
-    ? overlay.coordinates_w * scaleX
-    : videoDisplayWidth * 0.25;
-  const rawH = (overlay.coordinates_h != null && overlay.coordinates_h > 0)
-    ? overlay.coordinates_h * scaleY
-    : videoDisplayHeight * 0.22;
-
-  const MAX_W = videoDisplayWidth * 0.28;
-  const MAX_H = videoDisplayHeight * 0.28;
-  const w = Math.min(rawW, MAX_W);
-  const h = Math.min(rawH, MAX_H);
-  const x = Math.min(rawX, videoDisplayWidth - w);
-  const y = Math.min(rawY, videoDisplayHeight - h);
+  // 좌표 스케일링 (utils/overlay.ts 순수 함수 사용)
+  const dims = { naturalWidth: videoNaturalWidth, naturalHeight: videoNaturalHeight, displayWidth: videoDisplayWidth, displayHeight: videoDisplayHeight };
+  const raw = scaleCoordinates(overlay, dims);
+  const capped = capOverlaySize(raw.w, raw.h, videoDisplayWidth, videoDisplayHeight);
+  const pos = clampPosition(raw.x, raw.y, capped.w, capped.h, videoDisplayWidth, videoDisplayHeight);
+  const { w, h } = capped;
+  const { x, y } = pos;
 
   return (
     <>
